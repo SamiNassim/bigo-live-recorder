@@ -4,6 +4,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,6 +26,61 @@ func TestDefaultSortAndLogOrder(t *testing.T) {
 		if got[0].Sequence != map[string]uint64{"All levels": 3, "WARN": 2}[level] {
 			t.Fatal(got)
 		}
+	}
+}
+
+func TestIndependentPauseAndLiveFilters(t *testing.T) {
+	rows := []monitor.Row{
+		{Streamer: state.Streamer{ID: "recording"}, Status: "Recording", Live: true},
+		{Streamer: state.Streamer{ID: "live-paused", RecordingPaused: true}, Status: "Live", Live: true},
+		{Streamer: state.Streamer{ID: "offline-paused", RecordingPaused: true}, Status: "Offline"},
+		{Streamer: state.Streamer{ID: "monitoring-paused", Paused: true}, Status: "Monitoring paused", Live: true},
+	}
+	for filter, want := range map[string]int{"Recording paused": 2, "Monitoring paused": 1, "Live": 2, "Recording": 1, "Offline": 1} {
+		if got := filteredRows(rows, "", filter, "All priorities", "Name"); len(got) != want {
+			t.Fatal(filter, got)
+		}
+	}
+}
+
+func TestStreamerMenusAlwaysExposeRecordingPauseAndResume(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := logging.Open(store.Directory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	a := newApplication(store, log)
+	defer a.cancel()
+	a.preview = true
+	a.seedPreview()
+	tt := ui.NewTester(a.view, 1400, 900)
+	for _, row := range a.snapshot.Rows {
+		if err := tt.Click("Actions for " + row.Streamer.DisplayName()); err != nil {
+			t.Fatal(err)
+		}
+		menu := tt.Menu()
+		want := "Pause recording"
+		if row.Streamer.RecordingPaused {
+			want = "Resume recording"
+		}
+		if !slices.Contains(menu, want) || slices.Contains(menu, "Stop recording") {
+			t.Fatal("recording controls missing or obsolete", menu)
+		}
+		monitoringAction := "Pause monitoring"
+		if row.Streamer.Paused {
+			monitoringAction = "Resume monitoring"
+		}
+		if !slices.Contains(menu, monitoringAction) {
+			t.Fatal("independent monitoring control missing", menu)
+		}
+		tt.CloseMenu()
+	}
+	if !tt.HasText("Recording paused") || !tt.HasText("●  Live (last check)") || !tt.HasText("●  Monitoring paused") {
+		t.Fatal("pause and presence states are not visible", tt.Texts())
 	}
 }
 
