@@ -319,14 +319,18 @@ func (a *application) settings(c *ui.Context) {
 		})
 		section(c, "Playback account", "A valid web account cookie resolves playback directly over HTTP. No browser is launched while monitoring or recording.", func() {
 			ui.Row(c).Gap(10).FillWidth().Children(func() {
-				ui.TextInput(c, &a.cfg.Cookie).Password().Placeholder("Paste the uniqid cookie value").Label("BIGO web cookie").Grow(1).Height(34)
+				if ui.TextInput(c, &a.cfg.Cookie).Password().Placeholder("Paste the uniqid cookie value").Label("BIGO web cookie").Grow(1).Height(34).Changed() {
+					a.cookieChanged()
+				}
 				if ui.Button(c, "Paste cookie").Clicked() {
 					a.paste(&a.cfg.Cookie)
+					a.cookieChanged()
 				}
 				if ui.Button(c, "Validate account").Disabled(a.validating).Clicked() {
 					a.validateCookie()
 				}
 			})
+			a.autoValidateCookie(c)
 			if a.accountMessage != "" {
 				color := t.Warning
 				if a.account != nil {

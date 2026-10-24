@@ -56,6 +56,8 @@ type application struct {
 	ffmpeg, preview                              bool
 
 	normalSeconds, coldSeconds, delaySeconds float64
+	cookieEditedAt                           time.Time
+	cookieLastChecked                        string
 }
 
 func newApplication(store *state.Store, log *logging.Log) *application {
@@ -318,6 +320,7 @@ func (a *application) validateCookie() {
 		return
 	}
 	raw := a.cfg.Cookie
+	a.cookieLastChecked = raw
 	cookie, err := bigo.ParseCookie(raw)
 	if err != nil || cookie == "" {
 		a.accountMessage = "Paste the uniqid cookie first."
@@ -346,6 +349,24 @@ func (a *application) validateCookie() {
 			}
 		})
 	}()
+}
+
+func (a *application) cookieChanged() {
+	a.cookieEditedAt = time.Now()
+	a.cookieLastChecked = ""
+	a.account = nil
+	a.accountMessage = ""
+}
+
+func (a *application) autoValidateCookie(c *ui.Context) {
+	if a.preview || a.validating || strings.TrimSpace(a.cfg.Cookie) == "" || a.cookieLastChecked == a.cfg.Cookie {
+		return
+	}
+	if remaining := 800*time.Millisecond - time.Since(a.cookieEditedAt); remaining > 0 {
+		c.After(remaining)
+		return
+	}
+	a.validateCookie()
 }
 
 func (a *application) choosePath(directory bool, destination *string) {
