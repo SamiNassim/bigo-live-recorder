@@ -266,7 +266,25 @@ func maxTime(a, b time.Time) time.Time {
 	return a
 }
 func ValidID(id string) bool {
-	return id != "" && len(id) <= 64 && !strings.ContainsAny(id, " /?#\\\r\n\t@") && id != "." && id != ".."
+	return id != "" && len(id) <= 64 && !strings.ContainsAny(id, " /:?#%\\\r\n\t@") && id != "." && id != ".."
+}
+
+// ParseID accepts an ID/alias or a public BIGO profile URL, never an arbitrary
+// host. Only the canonical identifier is persisted and used in API requests.
+func ParseID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if strings.Contains(id, "://") {
+		u, err := url.Parse(id)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" ||
+			(!strings.EqualFold(u.Hostname(), "www.bigo.tv") && !strings.EqualFold(u.Hostname(), "bigo.tv")) {
+			return "", errors.New("enter a BIGO ID or a bigo.tv profile URL")
+		}
+		id = strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/")
+	}
+	if !ValidID(id) {
+		return "", errors.New("enter a BIGO ID or a bigo.tv profile URL")
+	}
+	return id, nil
 }
 func setRequestHeaders(r *http.Request, referer string) {
 	platform, token := "Linux", "X11; Linux x86_64"

@@ -141,11 +141,12 @@ func (e *Engine) SaveConfig(c state.Config) error {
 }
 
 func (e *Engine) Add(id, name string) error {
-	id = strings.TrimSpace(id)
-	if !bigo.ValidID(id) {
-		return errors.New("enter a BIGO ID or alias, without @ or a URL")
+	var err error
+	id, err = bigo.ParseID(id)
+	if err != nil {
+		return err
 	}
-	err := e.store.Update(func(d *state.Data) error {
+	err = e.store.Update(func(d *state.Data) error {
 		if slices.ContainsFunc(d.Streamers, func(s state.Streamer) bool { return strings.EqualFold(s.ID, id) }) {
 			return errors.New("this streamer is already in the list")
 		}

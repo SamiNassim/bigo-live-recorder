@@ -391,8 +391,8 @@ func (a *application) settings(c *ui.Context) {
 func (a *application) dialogs(c *ui.Context) {
 	ui.Modal(c, &a.addOpen, func() {
 		ui.Text(c, "Add a streamer").FontSize(22).FontWeight(600)
-		ui.Text(c, "Use a BIGO ID or alias, without @ or a link.").TextColor(c.Theme().TextMuted)
-		ui.TextInput(c, &a.addID).Placeholder("BIGO ID").Label("New streamer ID").Width(400)
+		ui.Text(c, "Paste a BIGO profile URL, or enter an ID or alias.").TextColor(c.Theme().TextMuted)
+		ui.TextInput(c, &a.addID).Placeholder("BIGO ID or https://www.bigo.tv/…").Label("New streamer ID").Width(400)
 		ui.TextInput(c, &a.addName).Placeholder("Custom name (optional)").Label("Custom name").Width(400)
 		ui.Row(c).Justify(ui.End).Gap(10).Children(func() {
 			if ui.Button(c, "Cancel").Clicked() {
