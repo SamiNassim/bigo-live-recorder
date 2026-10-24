@@ -48,7 +48,6 @@ const (
 	linkdPingEvery              = 20 * time.Second
 	legacyRSAKeyBits            = 512
 	legacyRSAExponent           = 65537
-	legacySecret                = "YjRkNjkyMzEtNDg1ZC00NWYxLTkxNzgtZmRlOWY3ZmFkZTQ0"
 	// BIGO uses 0 for an active foreground client and 7 for a background one.
 	// Active delivery is required for this persistent listener.
 	linkdForegroundStatus int16 = 0
@@ -563,35 +562,34 @@ func (c *linkdClient) preserveLiveEvent(frame linkdFrame) error {
 }
 
 func (c *linkdClient) login(ctx context.Context) error {
-	uid, _ := c.session.accountUID()
-	uuid, _ := c.session.accountUUID()
-	cookie, _ := c.session.cookie()
-	securityPacket, _ := c.session.securityPacket()
 	body := &wireWriter{}
-	body.u32(uid)
-	body.blob(cookie)
-	body.string(legacySecret)
+	body.u32(c.session.UID)
+	body.blob(c.session.Cookie)
+	// Web-issued tickets require the web login secret, not the Android secret.
+	body.string("0")
 	body.string(c.session.Username)
 	body.string(c.session.DeviceID)
-	body.i32(c.session.ComposedClientVersion)
+	body.i32(0)
 	body.i16(linkdForegroundStatus)
 	body.i16(0)
-	body.i32(c.session.SDKVersion)
+	body.i32(0)
 	body.i8(0)
 	body.i32(0)
-	body.i16(c.session.LanguageCode)
+	body.i16(0)
 	body.i8(0)
-	body.i16(c.session.ClientVersionCode)
-	body.i8(c.session.ClientType)
-	body.i16(c.session.AndroidSDK)
+	body.i16(0)
+	// Native client type 1 was verified receiving a target-attributed live start
+	// with a web-issued ticket. Web client type 7 only proved authentication.
+	body.i8(1)
+	body.i16(0)
 	body.i32(0)
 	body.i16(0)
 	body.i32(0)
 	body.string("")
 	body.string("")
-	body.string(c.session.CountryCode)
-	body.blob(securityPacket)
-	body.u32(uuid)
+	body.string("CN")
+	body.blob(nil)
+	body.u32(0)
 	body.emptyStringMap()
 	if err := c.sendFrame(uriPrepareLogin, body.Bytes()); err != nil {
 		return err
@@ -612,10 +610,13 @@ func (c *linkdClient) login(ctx context.Context) error {
 		return errors.New("decode BIGO prepare-login response result")
 	}
 	if result != protocolStatusOK {
-		return fmt.Errorf("%w: captured session uid=%d prepare-login result=%d", errProtocolRejected, uint32(responseUID), result)
+		return fmt.Errorf("%w: web-issued ticket uid=%d prepare-login result=%d", errProtocolRejected, uint32(responseUID), result)
+	}
+	if uint32(responseUID) != c.session.UID {
+		return errors.New("BIGO prepare-login returned a different account uid")
 	}
 	login := &wireWriter{}
-	login.string(c.session.CountryCode)
+	login.string("CN")
 	if err := c.sendFrame(uriLogin, login.Bytes()); err != nil {
 		return err
 	}
@@ -635,7 +636,7 @@ func (c *linkdClient) login(ctx context.Context) error {
 }
 
 func (c *linkdClient) addFollow(ctx context.Context, targetUID uint32) error {
-	uid, _ := c.session.accountUID()
+	uid := c.session.UID
 	seq := c.nextSequence()
 	body := &wireWriter{}
 	body.i32(protocolAppID)
@@ -682,7 +683,7 @@ func followResultAccepted(result int32) bool {
 }
 
 func (c *linkdClient) enableLiveNotice(ctx context.Context, targetUID uint32) error {
-	uid, _ := c.session.accountUID()
+	uid := c.session.UID
 	seq := c.nextSequence()
 	body := &wireWriter{}
 	body.i32(protocolAppID)
@@ -866,10 +867,7 @@ func (c *linkdClient) acknowledgeLiveEvent(event liveEvent) error {
 	if event.URI != uriLiveStartNotify {
 		return nil
 	}
-	uid, err := c.session.accountUID()
-	if err != nil {
-		return err
-	}
+	uid := c.session.UID
 	body := &wireWriter{}
 	body.i32(event.AppID)
 	body.i32(event.Sequence)
@@ -888,12 +886,14 @@ func liveMessageID(content string) int64 {
 	if json.Unmarshal([]byte(content), &outer) != nil {
 		return 0
 	}
-	var reserved string
-	if json.Unmarshal(outer["key_reserved"], &reserved) != nil || strings.TrimSpace(reserved) == "" {
-		return 0
+	reserved := outer["key_reserved"]
+	// Accept both the object and JSON-in-a-string forms. Preserve large IDs.
+	var quoted string
+	if json.Unmarshal(reserved, &quoted) == nil {
+		reserved = json.RawMessage(quoted)
 	}
 	var values map[string]json.RawMessage
-	if json.Unmarshal([]byte(reserved), &values) != nil {
+	if json.Unmarshal(reserved, &values) != nil {
 		return 0
 	}
 	seqRaw := values["seqid"]

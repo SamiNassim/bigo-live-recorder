@@ -63,7 +63,7 @@ func (c *fakeHubClient) waitLiveEvent(context.Context) (liveEvent, error) {
 func TestHubDispatchTargetsMatchingStreamerAndFansOutTerseEvents(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	hub := NewHub(ctx, nil, nil)
+	hub := NewHub(ctx, testSessionSource, nil, nil)
 	defer func() {
 		cancel()
 		hub.Close()
@@ -117,6 +117,15 @@ func TestLiveMessageID(t *testing.T) {
 	if got := liveMessageID(strings.Repeat("x", 8)); got != 0 {
 		t.Fatalf("invalid content returned message id %d", got)
 	}
+	for _, content := range []string{
+		`{"key_reserved":{"seqid":"1234567890123456789"}}`,
+		`{"key_reserved":{"seqid":1234567890123456789}}`,
+		`{"key_reserved":"{\"seqid\":\"1234567890123456789\"}"}`,
+	} {
+		if got := liveMessageID(content); got != 1234567890123456789 {
+			t.Fatalf("message ID lost precision or object form: %d", got)
+		}
+	}
 }
 
 func TestAlreadyActiveFollowResultAllowsNotificationSetup(t *testing.T) {
@@ -136,13 +145,13 @@ func TestConfigureKeepsNativeModeSelectedWhenSessionIsUnusable(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	warnings := make([]string, 0, 1)
-	hub := NewHub(ctx, nil, func(message string) { warnings = append(warnings, message) })
+	hub := NewHub(ctx, testSessionSource, nil, func(message string) { warnings = append(warnings, message) })
 	defer func() {
 		cancel()
 		hub.Close()
 	}()
 
-	if !hub.Configure(true, "") {
+	if !hub.Configure(true, "", "device") {
 		t.Fatal("native mode should remain selected with an empty session")
 	}
 	status := hub.Status()
@@ -152,7 +161,7 @@ func TestConfigureKeepsNativeModeSelectedWhenSessionIsUnusable(t *testing.T) {
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "native listening is inactive") {
 		t.Fatalf("warnings=%v, want explicit push-only warning", warnings)
 	}
-	if hub.Configure(false, "") {
+	if hub.Configure(false, "", "device") {
 		t.Fatal("disabling native mode should select regular polling")
 	}
 	status = hub.Status()
@@ -416,6 +425,7 @@ func TestHubAddsTargetWithoutClosingOrRepeatingExistingSetup(t *testing.T) {
 		enabled:   true,
 		usable:    true,
 		configKey: "test-session",
+		source:    testSessionSource,
 		watchers: map[uint64]*watcher{
 			1: {publicID: "first", targetUID: 111, events: make(chan Notification, 1)},
 		},
@@ -467,6 +477,76 @@ func TestHubAddsTargetWithoutClosingOrRepeatingExistingSetup(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("listener did not stop after context cancellation")
+	}
+}
+
+func TestReconnectRefreshesTicketWithoutCreatingPerTargetLogins(t *testing.T) {
+	t.Parallel()
+	issued := 0
+	var usedTickets []string
+	client := &fakeHubClient{rejectFollow: map[uint32]error{}, waitErr: io.EOF}
+	hub := &Hub{
+		enabled: true, usable: true, configKey: "cookie", wake: make(chan struct{}, 1),
+		watchers: map[uint64]*watcher{
+			1: {publicID: "first", targetUID: 111, events: make(chan Notification, 1)},
+			2: {publicID: "second", targetUID: 222, events: make(chan Notification, 1)},
+		},
+		source: func(context.Context, string) (Session, error) {
+			issued++
+			s := validTestSession()
+			s.Cookie = []byte(fmt.Sprintf("fresh-ticket-%d", issued))
+			return s, nil
+		},
+		dial: func(_ context.Context, s Session) (hubClient, string, error) {
+			usedTickets = append(usedTickets, string(s.Cookie))
+			return client, "test-linkd", nil
+		},
+	}
+	snapshot, _ := hub.snapshot()
+	followed, subscribed := map[uint32]bool{}, map[uint32]bool{}
+	rejected := map[uint32]targetRejection{}
+	for range 2 {
+		if err := hub.connectAndListen(context.Background(), snapshot, followed, subscribed, rejected); !errors.Is(err, io.EOF) {
+			t.Fatal(err)
+		}
+	}
+	if issued != 2 || len(usedTickets) != 2 || usedTickets[0] == usedTickets[1] {
+		t.Fatalf("reconnect reused a stale ticket or logged in per target: %v", usedTickets)
+	}
+	if len(client.followCalls) != 2 || len(client.noticeCalls) != 2 {
+		t.Fatal("reconnect repeated confirmed account preferences")
+	}
+}
+
+func TestCookieChangeCancelsCredentialBootstrap(t *testing.T) {
+	t.Parallel()
+	entered, stopped := make(chan struct{}), make(chan struct{})
+	hub := NewHub(context.Background(), func(ctx context.Context, _ string) (Session, error) {
+		close(entered)
+		<-ctx.Done()
+		close(stopped)
+		return Session{}, ctx.Err()
+	}, nil, nil)
+	defer hub.Close()
+	hub.Configure(true, "first-cookie", "device")
+	_, unsubscribe, err := hub.Subscribe("target", 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("credential bootstrap did not start")
+	}
+	hub.Configure(false, "new-cookie", "device")
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("configuration change did not cancel old credential request")
+	}
+	if hub.Status().Connected {
+		t.Fatal("disabled listener reported connected")
 	}
 }
 

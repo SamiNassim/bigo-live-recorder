@@ -37,6 +37,7 @@ type streamClient interface {
 	Configure(string, time.Duration)
 	Check(context.Context, string) (bigo.Stream, error)
 	Presence(context.Context, string) (bigo.Stream, error)
+	Messaging(context.Context, string) (bigo.MessagingCredentials, error)
 }
 type activeRecording interface {
 	File() string
@@ -85,7 +86,7 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64)}
 	e.recoverHistory()
-	e.hub = bigolistener.NewHub(ctx, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) })
+	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) })
 	e.configure(store.Config())
 	e.wg.Add(1)
 	go e.run()
@@ -100,7 +101,18 @@ func (e *Engine) wakeUp() {
 }
 func (e *Engine) configure(c state.Config) {
 	e.client.Configure(c.Cookie, time.Duration(c.RequestDelaySeconds)*time.Second)
-	e.hub.Configure(c.NativeListening, c.NativeSession)
+	e.hub.Configure(c.NativeListening, c.Cookie, c.NativeDeviceID)
+}
+
+func (e *Engine) messagingSession(ctx context.Context, deviceID string) (bigolistener.Session, error) {
+	credentials, err := e.client.Messaging(ctx, deviceID)
+	if err != nil {
+		return bigolistener.Session{}, err
+	}
+	return bigolistener.Session{
+		UID: credentials.UID, Username: credentials.Username, Cookie: credentials.Cookie,
+		DeviceID: credentials.DeviceID, LinkdAddresses: bigolistener.LinkdAddresses(credentials.Addresses),
+	}, nil
 }
 
 func (e *Engine) SaveConfig(c state.Config) error {
@@ -108,11 +120,6 @@ func (e *Engine) SaveConfig(c state.Config) error {
 	c.Cookie, err = bigo.ParseCookie(c.Cookie)
 	if err != nil {
 		return err
-	}
-	if c.NativeListening && strings.TrimSpace(c.NativeSession) != "" {
-		if _, err = bigolistener.ParseSessionJSON(c.NativeSession); err != nil {
-			return fmt.Errorf("native session: %w", err)
-		}
 	}
 	if err = e.store.SaveConfig(c); err != nil {
 		return err
@@ -314,7 +321,7 @@ func (e *Engine) reconcile() {
 			it.holdRoom = ""
 			it.row.NextCheck = time.Now()
 		}
-		if cfg.NativeListening && !cfg.PollingBackup && strings.TrimSpace(cfg.NativeSession) == "" && it.handle == nil {
+		if cfg.NativeListening && !cfg.PollingBackup && strings.TrimSpace(cfg.Cookie) == "" && it.handle == nil {
 			it.row.Status = "Setup needed"
 			it.row.NextCheck = time.Time{}
 		}
@@ -345,7 +352,7 @@ func (e *Engine) reconcile() {
 func (e *Engine) next() string {
 	cfg := e.store.Config()
 	// A selected-but-unconfigured native listener is not permission to poll.
-	canBootstrap := !cfg.NativeListening || cfg.PollingBackup || strings.TrimSpace(cfg.NativeSession) != ""
+	canBootstrap := !cfg.NativeListening || cfg.PollingBackup || strings.TrimSpace(cfg.Cookie) != ""
 	if !canBootstrap {
 		return ""
 	}

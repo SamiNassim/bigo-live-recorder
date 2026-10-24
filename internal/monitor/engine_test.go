@@ -15,11 +15,15 @@ import (
 
 type fakeClient struct {
 	calls   atomic.Int64
+	offline bool
 	entered chan struct{}
 	release chan struct{}
 }
 
 func (c *fakeClient) Configure(string, time.Duration) {}
+func (c *fakeClient) Messaging(context.Context, string) (bigo.MessagingCredentials, error) {
+	return bigo.MessagingCredentials{}, bigo.ErrLoginRequired
+}
 func (c *fakeClient) Presence(context.Context, string) (bigo.Stream, error) {
 	return bigo.Stream{UID: 123}, nil
 }
@@ -35,6 +39,9 @@ func (c *fakeClient) Check(ctx context.Context, id string) (bigo.Stream, error) 
 		case <-ctx.Done():
 			return bigo.Stream{}, ctx.Err()
 		}
+	}
+	if c.offline {
+		return bigo.Stream{UID: 123}, nil
 	}
 	return bigo.Stream{Alive: 1, UID: 123, RoomID: "room", HLS: "https://example.com/live.m3u8"}, nil
 }
@@ -120,6 +127,33 @@ func TestNativeWithoutSessionNeverFallsBack(t *testing.T) {
 	e.reconcile()
 	if e.next() != "" || client.calls.Load() != 0 {
 		t.Fatal("native missing session performed API polling")
+	}
+}
+
+func TestCookieBootstrapsNativeOnlyWithoutHiddenPolling(t *testing.T) {
+	store, log := fixture(t, true, false)
+	cfg := store.Config()
+	cfg.Cookie = "web-cookie"
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{offline: true}
+	e := newEngine(store, log, client, nil)
+	defer e.Close()
+	waitFor(t, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.items["test"] != nil && e.items["test"].initial
+	})
+	for range 5 {
+		e.mu.Lock()
+		e.items["test"].row.NextCheck = time.Now().Add(-time.Hour)
+		e.mu.Unlock()
+		e.wakeUp()
+	}
+	time.Sleep(80 * time.Millisecond)
+	if client.calls.Load() != 1 || e.next() != "" {
+		t.Fatalf("failed native credentials enabled polling: checks=%d", client.calls.Load())
 	}
 }
 

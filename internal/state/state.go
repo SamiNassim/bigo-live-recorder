@@ -2,6 +2,7 @@
 package state
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,7 @@ type Config struct {
 	RecordingPath         string `json:"recording_path"`
 	FFmpegPath            string `json:"ffmpeg_path,omitempty"`
 	Cookie                string `json:"bigo_cookie,omitempty"`
-	NativeSession         string `json:"native_session,omitempty"`
+	NativeDeviceID        string `json:"native_device_id"`
 	NativeListening       bool   `json:"native_listening"`
 	PollingBackup         bool   `json:"polling_backup"`
 	PollSeconds           int    `json:"poll_seconds"`
@@ -82,10 +83,14 @@ type Data struct {
 func Defaults() Config {
 	home, _ := os.UserHomeDir()
 	return Config{Theme: "system", RecordingPath: filepath.Join(home, "Movies", "BIGO Live Recorder"), NativeListening: true,
-		PollSeconds: 75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true}
+		NativeDeviceID: "web_" + rand.Text(),
+		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true}
 }
 
 func (c Config) Validate() error {
+	if c.NativeDeviceID == "" {
+		return errors.New("BIGO listener device identity is missing")
+	}
 	if c.Theme != "system" && c.Theme != "dark" && c.Theme != "light" {
 		return errors.New("choose System, Dark, or Light appearance")
 	}
@@ -124,6 +129,7 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{dir: dir, config: Defaults(), data: Data{Version: 1, Streamers: []Streamer{}, Recordings: []Recording{}}}
+	migrateConfig := false
 	for _, file := range []struct {
 		name  string
 		value any
@@ -141,12 +147,28 @@ func Open(dir string) (*Store, error) {
 		if err = json.Unmarshal(b, file.value); err != nil {
 			return nil, fmt.Errorf("read %s: %w (original file preserved)", file.name, err)
 		}
+		if file.name == "config.json" {
+			var fields map[string]json.RawMessage
+			if err = json.Unmarshal(b, &fields); err != nil {
+				return nil, err
+			}
+			_, hadNativeSession := fields["native_session"]
+			_, hadDeviceID := fields["native_device_id"]
+			migrateConfig = hadNativeSession || !hadDeviceID
+		}
 	}
 	if err := s.config.Validate(); err != nil {
 		return nil, fmt.Errorf("config.json: %w", err)
 	}
 	if s.data.Version != 1 {
 		return nil, fmt.Errorf("unsupported data.json version %d", s.data.Version)
+	}
+	// Drop the obsolete Android session only after both files were validated.
+	// The existing web cookie, preferences, streamers and history are preserved.
+	if migrateConfig {
+		if err := writeJSON(filepath.Join(dir, "config.json"), s.config); err != nil {
+			return nil, fmt.Errorf("migrate cookie-only configuration: %w", err)
+		}
 	}
 	return s, nil
 }

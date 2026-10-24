@@ -60,9 +60,13 @@ type RuntimeStatus struct {
 type hubSnapshot struct {
 	version   uint64
 	configKey string
-	session   Session
+	deviceID  string
 	targets   []target
 }
+
+// SessionSource obtains a fresh messaging ticket on each connection attempt.
+// It must honor cancellation; no ticket is periodically refreshed while connected.
+type SessionSource func(context.Context, string) (Session, error)
 
 type hubClient interface {
 	Close() error
@@ -74,7 +78,7 @@ type hubClient interface {
 type hubDialFunc func(context.Context, Session) (hubClient, string, error)
 
 // Hub owns one shared authenticated Linkd connection for every monitored BIGO
-// streamer. Parallel logins using the same captured account can displace each
+// streamer. Parallel native logins using the same account can displace each
 // other, so individual monitors subscribe to this shared connection.
 type Hub struct {
 	ctx    context.Context
@@ -84,7 +88,8 @@ type Hub struct {
 	enabled          bool
 	usable           bool
 	configKey        string
-	session          Session
+	deviceID         string
+	source           SessionSource
 	watchers         map[uint64]*watcher
 	nextWatcher      uint64
 	version          uint64
@@ -100,12 +105,13 @@ type Hub struct {
 	wg      sync.WaitGroup
 }
 
-// NewHub starts a dormant shared listener. The saved session is used only for
-// native Linkd notifications, follow, and subscription operations.
-func NewHub(parent context.Context, info, warning func(string)) *Hub {
+// NewHub starts a dormant shared listener. Source is invoked only when a
+// connection is needed; every monitored target uses that same connection.
+func NewHub(parent context.Context, source SessionSource, info, warning func(string)) *Hub {
 	ctx, cancel := context.WithCancel(parent)
 	h := &Hub{
 		ctx: ctx, cancel: cancel,
+		source:   source,
 		watchers: make(map[uint64]*watcher),
 		wake:     make(chan struct{}, 1),
 		info:     info,
@@ -146,12 +152,11 @@ func (h *Hub) Status() RuntimeStatus {
 	return h.status
 }
 
-// Configure applies the current preference and captured session. It returns
-// true when native listening is selected, even if the session is not currently
+// Configure applies the current preference and cookie identity. It returns
+// true when native listening is selected, even if the cookie is not currently
 // usable. Native mode never silently falls back to API polling.
-func (h *Hub) Configure(enabled bool, rawSessionJSON string) bool {
-	trimmed := strings.TrimSpace(rawSessionJSON)
-	hash := sha256.Sum256([]byte(trimmed))
+func (h *Hub) Configure(enabled bool, cookie, deviceID string) bool {
+	hash := sha256.Sum256([]byte(cookie + "\x00" + deviceID))
 	key := fmt.Sprintf("%t:%x", enabled, hash)
 
 	h.mu.Lock()
@@ -162,16 +167,14 @@ func (h *Hub) Configure(enabled bool, rawSessionJSON string) bool {
 	}
 	h.mu.Unlock()
 
-	var (
-		session Session
-		err     error
-		usable  bool
-	)
-	if trimmed != "" {
-		session, err = ParseSessionJSON(trimmed)
-		usable = err == nil
-	} else if enabled {
-		err = errors.New("BIGO session JSON is empty")
+	var err error
+	switch {
+	case strings.TrimSpace(cookie) == "":
+		err = errors.New("Paste your BIGO uniqid cookie in Settings to connect")
+	case strings.TrimSpace(deviceID) == "":
+		err = errors.New("BIGO listener device identity is missing")
+	case h.source == nil:
+		err = errors.New("BIGO listener credential source is unavailable")
 	}
 
 	h.mu.Lock()
@@ -182,8 +185,8 @@ func (h *Hub) Configure(enabled bool, rawSessionJSON string) bool {
 	}
 	h.configKey = key
 	h.enabled = enabled
-	h.usable = usable
-	h.session = session
+	h.usable = err == nil
+	h.deviceID = deviceID
 	h.version++
 	switch {
 	case !enabled:
@@ -309,7 +312,7 @@ func (h *Hub) snapshot() (hubSnapshot, bool) {
 		targets = append(targets, target{publicID: publicID, uid: uid})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].uid < targets[j].uid })
-	return hubSnapshot{version: h.version, configKey: h.configKey, session: h.session, targets: targets}, true
+	return hubSnapshot{version: h.version, configKey: h.configKey, deviceID: h.deviceID, targets: targets}, true
 }
 
 func (h *Hub) run() {
@@ -433,7 +436,15 @@ func (h *Hub) connectAndListen(
 	subscribed map[uint32]bool,
 	rejected map[uint32]targetRejection,
 ) error {
-	client, endpoint, err := h.dial(ctx, snapshot.session)
+	session, err := h.source(ctx, snapshot.deviceID)
+	if err != nil {
+		return fmt.Errorf("refresh BIGO messaging ticket: %w", err)
+	}
+	latest, ready := h.snapshot()
+	if ctx.Err() != nil || !ready || latest.configKey != snapshot.configKey {
+		return errHubReconfigured
+	}
+	client, endpoint, err := h.dial(ctx, session)
 	if err != nil {
 		return err
 	}
@@ -467,7 +478,7 @@ func (h *Hub) connectAndListen(
 		h.lastError = ""
 		h.mu.Unlock()
 		if announcedVersion != activeSnapshot.version && h.info != nil {
-			h.info(fmt.Sprintf("BIGO native listener active for %d/%d streamer(s) via %s", readyTargetCount, len(activeSnapshot.targets), endpoint))
+			h.info(fmt.Sprintf("BIGO native listener active for %d/%d streamer(s) via %s (web cookie; one shared connection)", readyTargetCount, len(activeSnapshot.targets), endpoint))
 			announcedVersion = activeSnapshot.version
 		}
 		h.setConnectedStatus(readyTargetCount, len(activeSnapshot.targets))
@@ -621,10 +632,7 @@ func (h *Hub) reportConnectionError(err error) {
 	}
 	message := err.Error()
 	h.mu.Lock()
-	if message == h.lastError {
-		h.mu.Unlock()
-		return
-	}
+	repeated := message == h.lastError
 	h.lastError = message
 	h.status = RuntimeStatus{
 		State:        "retrying",
@@ -633,7 +641,7 @@ func (h *Hub) reportConnectionError(err error) {
 		TotalTargets: h.uniqueTargetCountLocked(),
 	}
 	h.mu.Unlock()
-	if h.warning != nil {
+	if !repeated && h.warning != nil {
 		h.warning("BIGO native listener disconnected; reconnecting: " + message)
 	}
 }

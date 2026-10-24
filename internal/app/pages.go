@@ -264,7 +264,7 @@ func number(c *ui.Context, label string, value *float64, lo, hi float64) {
 
 func (a *application) settings(c *ui.Context) {
 	t := c.Theme()
-	header(c, "Settings", "Playback credentials, native notifications, and your recording workflow.", func() {
+	header(c, "Settings", "One BIGO account, native notifications, and your recording workflow.", func() {
 		if ui.PrimaryButton(c, "Save settings").Disabled(a.busy || a.preview).Height(36).Clicked() {
 			cfg := a.cfg
 			cfg.PollSeconds = int(a.normalSeconds)
@@ -287,7 +287,7 @@ func (a *application) settings(c *ui.Context) {
 	})
 	ui.Scroll(c).Grow(1).MinHeight(0).FillWidth().Gap(18).Children(func() {
 		section(c, "Monitoring", "Native notifications are the default. Regular polling runs only when you explicitly select it below.", func() {
-			toggle(c, "Native live notifications", "One shared BIGO connection. Uses the captured native session and automatically follows monitored accounts.", &a.cfg.NativeListening)
+			toggle(c, "Native live notifications", "One shared BIGO connection, authenticated with your web cookie. Automatically follows monitored accounts and enables their live notices.", &a.cfg.NativeListening)
 			if a.cfg.NativeListening {
 				toggle(c, "Enable polling backup", "Also check the queue at the configured cadence. Disabling this prevents automatic polling if the listener disconnects.", &a.cfg.PollingBackup)
 			}
@@ -297,7 +297,7 @@ func (a *application) settings(c *ui.Context) {
 			}
 			message := a.snapshot.Listener.Message
 			if message == "" {
-				message = "Paste a native session below to connect."
+				message = "Paste your BIGO uniqid cookie below to connect."
 			}
 			if !a.cfg.NativeListening {
 				message = "Native listener disabled. Queued polling is selected."
@@ -305,19 +305,8 @@ func (a *application) settings(c *ui.Context) {
 			}
 			ui.Text(c, "●  "+message).FontSize(12).TextColor(color).MaxLines(4)
 			ui.Text(c, fmt.Sprintf("%d / %d native subscriptions ready", a.snapshot.Listener.ReadyTargets, a.snapshot.Listener.TotalTargets)).FontSize(11).TextColor(t.TextMuted)
-			ui.Row(c).FillWidth().Gap(10).Children(func() {
-				ui.Text(c, "Captured native session (JSON)").Grow(1)
-				if ui.Button(c, "Paste session").Clicked() {
-					a.paste(&a.cfg.NativeSession)
-				}
-				if ui.Button(c, "Import JSON…").Clicked() {
-					a.importSession()
-				}
-			})
-			ui.TextArea(c, &a.cfg.NativeSession).Placeholder("Paste the contents of bigo-session.json").Height(94).FillWidth().Label("Native session JSON")
-			ui.Text(c, "This is separate from the web cookie. Do not run the same native session in two listeners at once.").FontSize(11).TextColor(t.TextMuted)
 		})
-		section(c, "Playback account", "A valid web account cookie resolves playback directly over HTTP. No browser is launched while monitoring or recording.", func() {
+		section(c, "BIGO account", "One cookie for native notifications and recording. No Android session, emulator, or running browser is needed.", func() {
 			ui.Row(c).Gap(10).FillWidth().Children(func() {
 				if ui.TextInput(c, &a.cfg.Cookie).Password().Placeholder("Paste the uniqid cookie value").Label("BIGO web cookie").Grow(1).Height(34).Changed() {
 					a.cookieChanged()
@@ -340,6 +329,7 @@ func (a *application) settings(c *ui.Context) {
 			}
 			ui.Text(c, "1. Sign in at bigo.tv in Brave or Chrome.\n2. Open Developer Tools → Application → Cookies → https://www.bigo.tv.\n3. Copy the Value of uniqid and paste it above. Validate, then Save settings.").FontSize(12).TextColor(t.TextMuted).Selectable()
 			ui.Text(c, "uniqid is HttpOnly, so document.cookie cannot export it. A copied Cookie header also works. Expired cookies need replacing.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
+			ui.Text(c, "Use this account in only one native listener at a time. Another app or terminal listener using it can disconnect this app.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
 		})
 		section(c, "Polling queue", "Checks are serialized and spaced globally. Streamers being recorded are excluded from API checks.", func() {
 			ui.Row(c).Gap(18).FillWidth().Children(func() {

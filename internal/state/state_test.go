@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,10 +32,53 @@ func TestDefaultsAndRoundTrip(t *testing.T) {
 	if r.Config().Cookie != c.Cookie || len(r.Data().Streamers) != 1 {
 		t.Fatal("snapshot lost")
 	}
+	if r.Config().NativeDeviceID == "" || r.Config().NativeDeviceID != c.NativeDeviceID {
+		t.Fatal("listener device identity was not persisted")
+	}
 	d := r.Data()
 	d.Streamers[0].ID = "mutated"
 	if r.Data().Streamers[0].ID != "alice" {
 		t.Fatal("snapshot aliases state")
+	}
+}
+
+func TestLegacyNativeSessionIsRemovedWithoutLosingCookie(t *testing.T) {
+	dir := t.TempDir()
+	c := Defaults()
+	c.Cookie = "valid-web-cookie"
+	c.Theme = "dark"
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "native_device_id")
+	fields["native_session"] = "obsolete-captured-account-secret"
+	raw, _ = json.Marshal(fields)
+	path := filepath.Join(dir, "config.json")
+	if err = os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Config(); got.Cookie != c.Cookie || got.Theme != c.Theme || got.NativeDeviceID == "" || !got.NativeListening || got.PollingBackup {
+		t.Fatalf("migration changed account/preferences: %+v", got)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &migrated); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := migrated["native_session"]; exists {
+		t.Fatal("obsolete native credential remains on disk")
 	}
 }
 func TestMalformedFileIsPreserved(t *testing.T) {

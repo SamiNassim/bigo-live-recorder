@@ -57,6 +57,16 @@ func TestNativeViewsAndNavigation(t *testing.T) {
 	if a.order != "Name" {
 		t.Fatal("sort reset across navigation")
 	}
+	a.page = "settings"
+	tt.Frame()
+	if tt.HasText("Captured native session (JSON)") || tt.HasText("Paste session") || tt.HasText("Import JSON…") {
+		t.Fatal("obsolete native session input is still visible")
+	}
+	if !tt.HasText("BIGO account") || !tt.HasText("Paste cookie") {
+		t.Fatal("single BIGO cookie input is missing")
+	}
+	a.page = "streamers"
+	tt.Frame()
 	if err = tt.Click("+  Add streamer"); err != nil {
 		t.Fatal(err)
 	}

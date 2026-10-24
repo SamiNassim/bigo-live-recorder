@@ -382,31 +382,6 @@ func (a *application) choosePath(directory bool, destination *string) {
 	}()
 }
 
-func (a *application) importSession() {
-	go func() {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Title: "Import captured BIGO native session", Filters: []mygo.FileFilter{{Name: "JSON session", Extensions: []string{"json"}}}})
-		var content []byte
-		if err == nil && len(paths) > 0 {
-			var info os.FileInfo
-			info, err = os.Stat(paths[0])
-			if err == nil {
-				if info.Size() > 1<<20 {
-					err = fmt.Errorf("session file exceeds 1 MB")
-				} else {
-					content, err = os.ReadFile(paths[0])
-				}
-			}
-		}
-		a.update(func() {
-			if err != nil {
-				a.message = err.Error()
-			} else if len(content) > 0 {
-				a.cfg.NativeSession = string(content)
-			}
-		})
-	}()
-}
-
 func (a *application) seedPreview() {
 	a.snapshot.Listener.State = "connected"
 	a.snapshot.Listener.Connected = true
