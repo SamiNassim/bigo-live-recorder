@@ -26,12 +26,13 @@ type Progress struct {
 	Stage           string
 }
 
-type release struct{ URL, ChecksumURL, Provider string }
+type release struct{ URL, ChecksumURL, ChecksumFile, Provider string }
 
 func sourceFor(goos, arch string) (release, error) {
 	if goos == "windows" && arch == "amd64" {
-		base := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-		return release{base, base + ".sha256", "gyan.dev"}, nil
+		base := "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+		name := "ffmpeg-n9.0-latest-win64-lgpl-9.0.zip"
+		return release{URL: base + name, ChecksumURL: base + "checksums.sha256", ChecksumFile: name, Provider: "BtbN (GitHub)"}, nil
 	}
 	if (goos == "darwin" || goos == "linux") && (arch == "amd64" || arch == "arm64") {
 		platform := goos
@@ -83,11 +84,11 @@ func install(ctx context.Context, client *http.Client, r release, destination st
 	}
 	defer os.RemoveAll(staging) // Only the unique installer-owned staging folder.
 	progress(Progress{Stage: "Connecting to download provider…"})
-	// Gyan's moving release checksum is fetched first. Riedl's checksum is
+	// The Windows release checksum is fetched first. Riedl's checksum is
 	// addressed by the immutable, versioned URL after resolving its redirect.
 	checksum := ""
 	if r.ChecksumURL != "" {
-		checksum, err = fetchChecksum(ctx, client, r.ChecksumURL)
+		checksum, err = fetchChecksum(ctx, client, r.ChecksumURL, r.ChecksumFile)
 		if err != nil {
 			return "", err
 		}
@@ -101,7 +102,7 @@ func install(ctx context.Context, client *http.Client, r release, destination st
 		return "", errors.New("FFmpeg download is unexpectedly large")
 	}
 	if checksum == "" {
-		checksum, err = fetchChecksum(ctx, client, resp.Request.URL.String()+".sha256")
+		checksum, err = fetchChecksum(ctx, client, resp.Request.URL.String()+".sha256", "")
 		if err != nil {
 			return "", err
 		}
@@ -159,7 +160,7 @@ func get(ctx context.Context, client *http.Client, address string) (*http.Respon
 	return resp, nil
 }
 
-func fetchChecksum(parent context.Context, client *http.Client, address string) (string, error) {
+func fetchChecksum(parent context.Context, client *http.Client, address, filename string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	resp, err := get(ctx, client, address)
@@ -167,12 +168,23 @@ func fetchChecksum(parent context.Context, client *http.Client, address string) 
 		return "", err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
+	const limit = 64 << 10
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return "", err
 	}
-	fields := strings.Fields(string(b))
-	if len(b) > 4096 || len(fields) == 0 || len(fields[0]) != 64 {
+	if len(b) > limit {
+		return "", errors.New("FFmpeg checksum manifest is too large")
+	}
+	var fields []string
+	for _, line := range strings.Split(string(b), "\n") {
+		v := strings.Fields(line)
+		if len(v) > 0 && filename == "" || len(v) == 2 && strings.TrimPrefix(v[1], "*") == filename {
+			fields = v
+			break
+		}
+	}
+	if len(fields) == 0 || len(fields[0]) != 64 {
 		return "", errors.New("invalid FFmpeg checksum response")
 	}
 	if _, err = hex.DecodeString(fields[0]); err != nil {

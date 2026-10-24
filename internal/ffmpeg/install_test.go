@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/pe"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -135,25 +136,64 @@ func TestBuildProviders(t *testing.T) {
 	}
 }
 
+func TestChecksumManifestMatchesExactArchive(t *testing.T) {
+	want := strings.Repeat("a", 64)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, strings.Repeat("b", 64)+"  other.zip\n"+want+"  selected.zip\n")
+	}))
+	defer srv.Close()
+	if got, err := fetchChecksum(context.Background(), srv.Client(), srv.URL, "selected.zip"); err != nil || got != want {
+		t.Fatal(got, err)
+	}
+	if _, err := fetchChecksum(context.Background(), srv.Client(), srv.URL, "missing.zip"); err == nil {
+		t.Fatal("used a checksum for a different archive")
+	}
+}
+
 // Opt-in download check: installs in a temporary directory, never the user's
 // real installation. Ordinary tests are entirely offline.
 func TestLiveFFmpegDownload(t *testing.T) {
 	if os.Getenv("BIGO_FFMPEG_DOWNLOAD_TEST") != "1" {
 		t.Skip("set BIGO_FFMPEG_DOWNLOAD_TEST=1 to test the build provider")
 	}
-	r, err := sourceFor(runtime.GOOS, runtime.GOARCH)
+	goos, arch := runtime.GOOS, runtime.GOARCH
+	if target := os.Getenv("BIGO_FFMPEG_DOWNLOAD_TARGET"); target != "" {
+		var ok bool
+		goos, arch, ok = strings.Cut(target, "/")
+		if !ok {
+			t.Fatal("BIGO_FFMPEG_DOWNLOAD_TARGET must be os/arch")
+		}
+	}
+	r, err := sourceFor(goos, arch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	name := "ffmpeg"
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		name += ".exe"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	destination := filepath.Join(t.TempDir(), name)
-	if _, err = install(ctx, &http.Client{Timeout: 3 * time.Minute}, r, destination, nil, probe); err != nil {
+	verify := probe
+	if goos != runtime.GOOS || arch != runtime.GOARCH {
+		if goos != "windows" || arch != "amd64" {
+			t.Skip("only Windows amd64 has a cross-host format verifier")
+		}
+		verify = func(_ context.Context, path string) error {
+			binary, err := pe.Open(path)
+			if err != nil {
+				return err
+			}
+			defer binary.Close()
+			if binary.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+				return errors.New("incorrect Windows executable architecture")
+			}
+			return nil
+		}
+	}
+	if _, err = install(ctx, &http.Client{Timeout: 3 * time.Minute}, r, destination, nil, verify); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Provider download, SHA-256, extraction and executable probe succeeded")
+	t.Log("Provider download, SHA-256, extraction and executable validation succeeded for", goos, arch)
 }
