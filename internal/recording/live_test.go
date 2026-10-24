@@ -45,7 +45,7 @@ func TestLiveCookieRecording(t *testing.T) {
 	}
 	cfg := state.Defaults()
 	cfg.RecordingPath = t.TempDir()
-	h, err := Start(ctx, state.Streamer{ID: id, Name: stream.Name}, stream.URL(), cfg)
+	h, err := Start(ctx, state.Streamer{ID: id, Name: stream.Name}, stream, cfg, bigo.StreamRecovery{Refresh: func(ctx context.Context) (bigo.Stream, error) { return client.Check(ctx, id) }})
 	if err != nil {
 		t.Fatal(err)
 	}

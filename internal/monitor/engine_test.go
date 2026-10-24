@@ -99,7 +99,9 @@ func TestNeverChecksActiveRecordingAndFinalizesOnClose(t *testing.T) {
 	store, log := fixture(t, false, false)
 	client := &fakeClient{}
 	h := &fakeRecording{done: make(chan struct{}), started: time.Now()}
-	e := newEngine(store, log, client, func(context.Context, state.Streamer, string, state.Config) (activeRecording, error) { return h, nil })
+	e := newEngine(store, log, client, func(context.Context, state.Streamer, bigo.Stream, state.Config) (activeRecording, error) {
+		return h, nil
+	})
 	waitFor(t, func() bool { return e.Snapshot().Recording == 1 })
 	for range 5 {
 		e.mu.Lock()
@@ -161,7 +163,7 @@ func TestPauseWhileCheckIsInFlight(t *testing.T) {
 	store, log := fixture(t, false, false)
 	client := &fakeClient{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	var starts atomic.Int64
-	e := newEngine(store, log, client, func(context.Context, state.Streamer, string, state.Config) (activeRecording, error) {
+	e := newEngine(store, log, client, func(context.Context, state.Streamer, bigo.Stream, state.Config) (activeRecording, error) {
 		starts.Add(1)
 		return nil, nil
 	})

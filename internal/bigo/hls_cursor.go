@@ -59,7 +59,7 @@ func (c *hlsCursor) fresh(p hlsPlaylist, source string) []hlsSegment {
 	tail := backward[len(backward)-1]
 	observation := resetObservation{sequence: tail.sequence, tail: segmentIdentity(tail, p)}
 	previous, observed := c.pending[source]
-	if c.pending == nil || len(c.pending) >= 8 {
+	if c.pending == nil || !observed && len(c.pending) >= 32 {
 		c.pending = make(map[string]resetObservation)
 	}
 	c.pending[source] = observation

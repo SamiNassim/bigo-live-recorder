@@ -72,13 +72,28 @@ func (s *Stream) UnmarshalJSON(b []byte) error {
 }
 
 func (s Stream) URL() string {
-	for _, v := range append([]string{s.HLS}, s.CDN...) {
-		u, err := url.Parse(strings.TrimSpace(v))
-		if err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") {
-			return u.String()
-		}
+	urls := s.URLs()
+	if len(urls) > 0 {
+		return urls[0]
 	}
 	return ""
+}
+
+// URLs returns the preferred playback URL followed by distinct CDN alternatives.
+func (s Stream) URLs() []string {
+	var result []string
+	seen := make(map[string]bool)
+	for _, v := range append([]string{s.HLS}, s.CDN...) {
+		u, err := url.Parse(strings.TrimSpace(v))
+		if err == nil && u.Host != "" && u.User == nil && (u.Scheme == "https" || u.Scheme == "http") && !seen[u.String()] {
+			result = append(result, u.String())
+			seen[u.String()] = true
+			if len(result) == 8 {
+				break
+			}
+		}
+	}
+	return result
 }
 
 type HTTPError struct {

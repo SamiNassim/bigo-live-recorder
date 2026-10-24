@@ -51,7 +51,7 @@ func FindFFmpeg(configured string) (string, error) {
 
 // Start returns only after FFmpeg has started. Context cancellation closes the
 // HLS reader and stdin, allowing FFmpeg to finalize the MKV before a bounded kill.
-func Start(parent context.Context, s state.Streamer, source string, cfg state.Config) (*Handle, error) {
+func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg state.Config, recovery bigo.StreamRecovery) (*Handle, error) {
 	ffmpeg, err := FindFFmpeg(cfg.FFmpegPath)
 	if err != nil {
 		return nil, err
@@ -71,7 +71,7 @@ func Start(parent context.Context, s state.Streamer, source string, cfg state.Co
 	name := safeName(s.DisplayName()) + "_" + stamp.Format("2006-01-02_15-04-05") + "_" + hex.EncodeToString(suffix[:]) + ".mkv"
 	path := filepath.Join(dir, name)
 	ctx, cancel := context.WithCancel(parent)
-	stream, err := bigo.OpenStream(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID)
+	stream, err := bigo.OpenRecoveringStream(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
 	if err != nil {
 		cancel()
 		return nil, err

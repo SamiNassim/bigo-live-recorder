@@ -17,6 +17,7 @@ const (
 	maxPlaylistBytes = 1 << 20
 	maxMasterDepth   = 4
 	maxStreamStall   = 2 * time.Minute
+	maxSegmentBytes  = 32 << 20
 )
 
 type hlsSegment struct {
@@ -50,6 +51,17 @@ func (r *hlsReadCloser) Close() error {
 // packet headers described by EXT-X-BIGO-WEB-PROTECTION. Closing the reader also
 // cancels outstanding playlist/segment requests.
 func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer string) (io.ReadCloser, error) {
+	return openHLSStream(ctx, client, Stream{HLS: playlistURL}, referer, StreamRecovery{}, defaultHLSPolicy(), false)
+}
+
+// OpenRecoveringStream keeps one reader open while recovering playback. API
+// refreshes happen only after a stall/error/end marker, never during healthy
+// recording. Account authentication stays in Refresh, isolated from media HTTP.
+func OpenRecoveringStream(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (io.ReadCloser, error) {
+	return openHLSStream(ctx, client, source, referer, recovery, defaultHLSPolicy(), true)
+}
+
+func openHLSStream(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery, policy hlsPolicy, recoverPlayback bool) (io.ReadCloser, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
@@ -58,11 +70,22 @@ func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer s
 	guest := *client
 	guest.Jar = nil
 	client = &guest
-	if _, err := hlsURL(nil, playlistURL); err != nil {
-		return nil, err
+	sources := source.URLs()
+	if len(sources) == 0 {
+		return nil, errors.New("BIGO HLS requires an HTTP(S) playback URL without embedded credentials")
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	playlist, mediaURL, err := loadHLSPlaylist(streamCtx, client, playlistURL, referer)
+	initialCtx, cancelInitial := context.WithTimeout(streamCtx, 30*time.Second)
+	var playlist hlsPlaylist
+	var mediaURL, rootURL string
+	var err error
+	for _, rootURL = range sources {
+		playlist, mediaURL, err = loadHLSPlaylist(initialCtx, client, rootURL, referer)
+		if err == nil {
+			break
+		}
+	}
+	cancelInitial()
 	if err != nil {
 		cancel()
 		return nil, err
@@ -74,7 +97,8 @@ func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer s
 	})
 	go func() {
 		defer close(stream.done)
-		err := readHLSStream(streamCtx, client, writer, mediaURL, referer, playlist)
+		r := &hlsReader{client: client, output: writer, source: source, rootURL: rootURL, mediaURL: mediaURL, referer: referer, playlist: playlist, recovery: recovery, policy: policy, enabled: recoverPlayback, lastProgress: time.Now()}
+		err := r.read(streamCtx)
 		_ = writer.CloseWithError(err)
 		stopCancellation()
 		cancel()
@@ -82,38 +106,9 @@ func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer s
 	return stream, nil
 }
 
-func readHLSStream(ctx context.Context, client *http.Client, output io.Writer, mediaURL, referer string, playlist hlsPlaylist) error {
-	var cursor hlsCursor
-	lastProgress := time.Now()
-	for {
-		segments := cursor.fresh(playlist, mediaURL)
-		for _, segment := range segments {
-			if err := writeHLSSegment(ctx, client, output, segment, referer); err != nil {
-				return err
-			}
-			cursor.accept(segment, playlist)
-			lastProgress = time.Now()
-		}
-		if playlist.end {
-			return nil
-		}
-		if time.Since(lastProgress) >= maxStreamStall {
-			return errors.New("BIGO HLS playlist stopped advancing for two minutes")
-		}
-		if err := waitHLS(ctx, playlist.refresh); err != nil {
-			return err
-		}
-		var err error
-		playlist, mediaURL, err = loadHLSPlaylist(ctx, client, mediaURL, referer)
-		if err != nil {
-			return err
-		}
-	}
-}
-
 func loadHLSPlaylist(ctx context.Context, client *http.Client, playlistURL, referer string) (hlsPlaylist, string, error) {
 	for depth := 0; depth <= maxMasterDepth; depth++ {
-		response, err := requestHLS(ctx, client, playlistURL, referer)
+		response, err := requestHLS(ctx, client, playlistURL, referer, true)
 		if err != nil {
 			return hlsPlaylist{}, "", err
 		}
@@ -287,7 +282,7 @@ func hlsURL(base *url.URL, raw string) (string, error) {
 	return parsed.String(), nil
 }
 
-func requestHLS(ctx context.Context, client *http.Client, resourceURL, referer string) (*http.Response, error) {
+func requestHLS(ctx context.Context, client *http.Client, resourceURL, referer string, playlist bool) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -300,6 +295,10 @@ func requestHLS(ctx context.Context, client *http.Client, resourceURL, referer s
 			return nil, fmt.Errorf("create BIGO HLS request: %w", err)
 		}
 		setRequestHeaders(request, referer)
+		if playlist {
+			request.Header.Set("Cache-Control", "no-cache")
+			request.Header.Set("Pragma", "no-cache")
+		}
 		response, err := client.Do(request)
 		if err == nil {
 			if response.StatusCode == http.StatusOK {
@@ -326,29 +325,31 @@ func requestHLS(ctx context.Context, client *http.Client, resourceURL, referer s
 	return nil, lastErr
 }
 
-func writeHLSSegment(ctx context.Context, client *http.Client, output io.Writer, segment hlsSegment, referer string) error {
-	response, err := requestHLS(ctx, client, segment.url, referer)
+func readHLSSegment(ctx context.Context, client *http.Client, segment hlsSegment, referer string) ([]byte, error) {
+	response, err := requestHLS(ctx, client, segment.url, referer, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
-	prefix := make([]byte, 2*188)
-	if _, err := io.ReadFull(response.Body, prefix); err != nil {
-		return fmt.Errorf("read BIGO MPEG-TS segment headers: %w", err)
+	// Commit only complete segments. Retrying after a partial network read must
+	// not append the beginning of the same segment twice to FFmpeg's input.
+	media, err := io.ReadAll(io.LimitReader(response.Body, maxSegmentBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read BIGO HLS segment: %w", err)
+	}
+	if len(media) > maxSegmentBytes {
+		return nil, errors.New("BIGO HLS segment exceeds 32 MiB")
+	}
+	if len(media) < 2*188 {
+		return nil, errors.New("BIGO MPEG-TS segment is shorter than two packet headers")
 	}
 	if segment.seed != nil {
-		restoreBigoHeaders(prefix, *segment.seed)
+		restoreBigoHeaders(media[:2*188], *segment.seed)
 	}
-	if prefix[0] != 0x47 || prefix[188] != 0x47 {
-		return errors.New("BIGO HLS segment does not contain valid MPEG-TS headers")
+	if media[0] != 0x47 || media[188] != 0x47 {
+		return nil, errors.New("BIGO HLS segment does not contain valid MPEG-TS headers")
 	}
-	if _, err := output.Write(prefix); err != nil {
-		return err
-	}
-	if _, err := io.Copy(output, response.Body); err != nil {
-		return fmt.Errorf("read BIGO HLS segment: %w", err)
-	}
-	return nil
+	return media, nil
 }
 
 // BIGO's VERSION=1 marker describes an XOR mask on the first 16 bytes of each

@@ -46,7 +46,7 @@ type activeRecording interface {
 	Done() <-chan struct{}
 	Result() recording.Result
 }
-type startRecording func(context.Context, state.Streamer, string, state.Config) (activeRecording, error)
+type startRecording func(context.Context, state.Streamer, bigo.Stream, state.Config) (activeRecording, error)
 
 type item struct {
 	row               Row
@@ -77,8 +77,12 @@ type Engine struct {
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {
-	return newEngine(store, log, bigo.NewClient(), func(ctx context.Context, s state.Streamer, source string, c state.Config) (activeRecording, error) {
-		return recording.Start(ctx, s, source, c)
+	client := bigo.NewClient()
+	return newEngine(store, log, client, func(ctx context.Context, s state.Streamer, source bigo.Stream, c state.Config) (activeRecording, error) {
+		return recording.Start(ctx, s, source, c, bigo.StreamRecovery{
+			Refresh: func(ctx context.Context) (bigo.Stream, error) { return client.Check(ctx, s.ID) },
+			Report:  func(level, message string) { log.Write(level, s.ID, message) },
+		})
 	})
 }
 
@@ -516,7 +520,7 @@ func (e *Engine) check(id string) {
 	it.row.Status = "Starting"
 	streamer := it.row.Streamer
 	e.mu.Unlock()
-	h, startErr := e.start(e.ctx, streamer, stream.URL(), cfg)
+	h, startErr := e.start(e.ctx, streamer, stream, cfg)
 	e.mu.Lock()
 	if startErr != nil {
 		it.row.Status = "Needs attention"
