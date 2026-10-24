@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	Window                Window `json:"window"`
 	Theme                 string `json:"theme"`
 	RecordingPath         string `json:"recording_path"`
 	FFmpegPath            string `json:"ffmpeg_path,omitempty"`
@@ -28,6 +29,15 @@ type Config struct {
 	FolderPerStreamer     bool   `json:"folder_per_streamer"`
 	ConvertToMP4          bool   `json:"convert_to_mp4"`
 	DeleteAfterConversion bool   `json:"delete_after_conversion"`
+}
+
+type Window struct {
+	X          int  `json:"x"`
+	Y          int  `json:"y"`
+	Width      int  `json:"width"`
+	Height     int  `json:"height"`
+	Maximized  bool `json:"maximized,omitempty"`
+	FullScreen bool `json:"fullScreen,omitempty"`
 }
 
 type Streamer struct {
@@ -165,6 +175,19 @@ func (s *Store) SaveConfig(c Config) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	c.Window = s.config.Window
+	if err := writeJSON(filepath.Join(s.dir, "config.json"), c); err != nil {
+		return err
+	}
+	s.config = c
+	return nil
+}
+
+func (s *Store) SaveWindow(w Window) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.config
+	c.Window = w
 	if err := writeJSON(filepath.Join(s.dir, "config.json"), c); err != nil {
 		return err
 	}

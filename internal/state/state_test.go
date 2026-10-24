@@ -73,3 +73,26 @@ func TestConcurrentAtomicUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWindowStateDoesNotOverwritePreferences(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := s.Config()
+	w := Window{X: 40, Y: 60, Width: 1300, Height: 850}
+	if err = s.SaveWindow(w); err != nil {
+		t.Fatal(err)
+	}
+	draft.Theme = "dark"
+	if err = s.SaveConfig(draft); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(s.Directory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Config().Theme != "dark" || r.Config().Window != w {
+		t.Fatalf("lost window or preference: %+v", r.Config())
+	}
+}

@@ -6,4 +6,5 @@ AGENTS.md
 .DS_Store
 *.exe
 *.test
+/mygo_*.syso
 
