@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,39 @@ type Stream struct {
 	HLS       string   `json:"hls_src"`
 	CDN       []string `json:"cdn_src"`
 	NeedLogin bool     `json:"needLogin"`
+}
+
+// BIGO uses both JSON strings and numbers for provider identifiers.
+func (s *Stream) UnmarshalJSON(b []byte) error {
+	type plain Stream
+	var fields struct {
+		*plain
+		UID    json.RawMessage `json:"uid"`
+		RoomID json.RawMessage `json:"roomId"`
+	}
+	fields.plain = (*plain)(s)
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return err
+	}
+	text := func(v json.RawMessage) string {
+		if len(v) == 0 || string(v) == "null" {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(v, &s) == nil {
+			return s
+		}
+		return string(v)
+	}
+	if v := text(fields.UID); v != "" {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid BIGO uid: %w", err)
+		}
+		s.UID = uint32(n)
+	}
+	s.RoomID = text(fields.RoomID)
+	return nil
 }
 
 func (s Stream) URL() string {

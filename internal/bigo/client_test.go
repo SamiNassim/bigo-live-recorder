@@ -2,6 +2,7 @@ package bigo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,6 +24,15 @@ func TestCookieParsing(t *testing.T) {
 	}
 	if _, err := ParseCookie("bad\r\ncookie"); err == nil {
 		t.Fatal("accepted header injection")
+	}
+}
+
+func TestFlexibleIdentifiers(t *testing.T) {
+	for _, v := range []string{`{"uid":123,"roomId":456}`, `{"uid":"123","roomId":"456"}`} {
+		var s Stream
+		if err := json.Unmarshal([]byte(v), &s); err != nil || s.UID != 123 || s.RoomID != "456" {
+			t.Fatalf("%+v %v", s, err)
+		}
 	}
 }
 func TestAuthenticatedClientAndGatedPresence(t *testing.T) {
