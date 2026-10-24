@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,15 +42,26 @@ func (h *Handle) Stop()                 { h.cancel() }
 func (h *Handle) Done() <-chan struct{} { return h.done }
 func (h *Handle) Result() Result        { <-h.done; return h.result }
 
+func (h *Handle) File() string       { return h.Path }
+func (h *Handle) Started() time.Time { return h.StartedAt }
+
 func FindFFmpeg(configured string) (string, error) {
+	candidates := []string{configured}
 	if configured == "" {
-		configured = "ffmpeg"
+		candidates = []string{"ffmpeg"}
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
+		}
+		if executable, err := os.Executable(); err == nil {
+			candidates = append(candidates, filepath.Join(filepath.Dir(executable), "ffmpeg"), filepath.Join(filepath.Dir(executable), "ffmpeg.exe"))
+		}
 	}
-	path, err := exec.LookPath(configured)
-	if err != nil {
-		return "", errors.New("FFmpeg was not found; install it or choose its executable in Settings")
+	for _, candidate := range candidates {
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path, nil
+		}
 	}
-	return path, nil
+	return "", errors.New("FFmpeg was not found; install it or choose its executable in Settings")
 }
 
 // Start returns only after FFmpeg has started. Context cancellation closes the
@@ -80,6 +92,7 @@ func Start(parent context.Context, s state.Streamer, source string, cfg state.Co
 		return nil, err
 	}
 	cmd := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostats", "-n", "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
+	configureCommand(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -106,7 +119,6 @@ func Start(parent context.Context, s state.Streamer, source string, cfg state.Co
 		var waitErr, copyErr error
 		select {
 		case waitErr = <-wait:
-			cancel()
 			stream.Close()
 			stdin.Close()
 			copyErr = <-copyDone
@@ -134,8 +146,8 @@ func Start(parent context.Context, s state.Streamer, source string, cfg state.Co
 		if size == 0 && err == nil {
 			err = errors.New("FFmpeg produced no media")
 		}
-		if cfg.ConvertToMP4 && size > 0 && waitErr == nil {
-			if converted, e := convert(ffmpeg, path); e != nil {
+		if cfg.ConvertToMP4 && size > 0 && waitErr == nil && parent.Err() == nil {
+			if converted, e := convert(parent, ffmpeg, path); e != nil {
 				err = errors.Join(err, e)
 			} else if cfg.DeleteAfterConversion {
 				if e = os.Remove(path); e != nil {
@@ -165,12 +177,13 @@ func finish(cmd *exec.Cmd, wait <-chan error) error {
 	}
 }
 
-func convert(ffmpeg, source string) (string, error) {
+func convert(parent context.Context, ffmpeg, source string) (string, error) {
 	target := strings.TrimSuffix(source, filepath.Ext(source)) + ".mp4"
 	// A failed or interrupted conversion never removes the original MKV.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-i", source, "-map", "0", "-c", "copy", "-movflags", "+faststart", target)
+	configureCommand(cmd)
 	var tail tailBuffer
 	cmd.Stderr = &tail
 	if err := cmd.Run(); err != nil {
