@@ -49,3 +49,4 @@ var navIcons = map[string]*ui.SVG{"streamers": icon("list-check"), "recordings":
 
 var dotsIcon = icon("dots")
 var connectionIcon = icon("connection")
+var warningIcon = icon("warning")

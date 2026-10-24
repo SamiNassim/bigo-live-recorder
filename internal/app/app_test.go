@@ -121,6 +121,12 @@ func TestNativeViewsAndNavigation(t *testing.T) {
 	if !tt.HasText("BIGO account") || !tt.HasText("Paste cookie") {
 		t.Fatal("single BIGO cookie input is missing")
 	}
+	if warningIcon == nil {
+		t.Fatal("account warning icon is missing")
+	}
+	if _, ok := tt.Find("BIGO account warning"); !ok || !tt.HasText("Make sure live notifications are enabled in your BIGO account settings.") || !tt.HasText("Another app or browser connected with this account can disconnect this app.") {
+		t.Fatal("account warning icon or guidance is missing")
+	}
 	a.page = "streamers"
 	tt.Frame()
 	if err = tt.Click("+  Add streamer"); err != nil {

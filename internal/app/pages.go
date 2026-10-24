@@ -397,7 +397,10 @@ func (a *application) settings(c *ui.Context) {
 				ui.Text(c, a.accountMessage).TextColor(color).Selectable()
 			}
 			ui.Text(c, "1. Sign in at bigo.tv in Brave or Chrome.\n2. Open Developer Tools → Application → Cookies → https://www.bigo.tv.\n3. Copy the Value of uniqid and paste it above. Validate, then Save settings.").FontSize(12).TextColor(t.TextMuted).Selectable()
-			ui.Text(c, "Use this account in only one native listener at a time. Another app or browser connected with this account can disconnect this app.").FontSize(11).TextColor(t.Danger).MaxLines(3)
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).TextColor(t.Danger).Children(func() {
+				ui.Icon(c, warningIcon).Size(16, 16).Shrink(0).Label("BIGO account warning")
+				ui.Text(c, "Use this account in only one native listener at a time. Another app or browser connected with this account can disconnect this app.\nMake sure live notifications are enabled in your BIGO account settings.").Grow(1).MinWidth(0).FontSize(11)
+			})
 		})
 		a.pollingQueue(c)
 		section(c, "Recording", "The original audio and video are copied, not re-encoded. Short MKV clusters limit damage if the process crashes.", func() {
