@@ -149,7 +149,7 @@ func TestConfigureKeepsNativeModeSelectedWhenSessionIsUnusable(t *testing.T) {
 	if status.State != "error" || status.Connected {
 		t.Fatalf("status=%+v, want a disconnected configuration error", status)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "polling remains disabled") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "native listening is inactive") {
 		t.Fatalf("warnings=%v, want explicit push-only warning", warnings)
 	}
 	if hub.Configure(false, "") {

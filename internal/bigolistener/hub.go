@@ -202,7 +202,7 @@ func (h *Hub) Configure(enabled bool, rawSessionJSON string) bool {
 	h.signalConfigChangeLocked()
 	h.mu.Unlock()
 	if enabled && err != nil && h.warning != nil {
-		h.warning("BIGO native listening is inactive; polling remains disabled while native mode is selected: " + err.Error())
+		h.warning("BIGO native listening is inactive: " + err.Error())
 	}
 	return enabled
 }
