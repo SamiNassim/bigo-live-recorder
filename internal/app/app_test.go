@@ -104,3 +104,39 @@ func TestNativeViewsAndNavigation(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedbackToastsExpireAcrossNavigation(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := logging.Open(store.Directory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	a := newApplication(store, log)
+	defer a.cancel()
+	a.preview = true
+	a.toasts = []string{"Settings saved", "Streamer removed"}
+	tt := ui.NewTester(a.view, 1400, 900)
+	if !tt.HasText("Settings saved") || !tt.HasText("Streamer removed") {
+		t.Fatal(tt.Texts())
+	}
+	a.page = "logs"
+	tt.Frame()
+	tt.Advance(10 * time.Second)
+	if tt.HasText("Settings saved") || tt.HasText("Streamer removed") {
+		t.Fatal("feedback did not expire")
+	}
+	a.page = "settings"
+	tt.Frame()
+	if a.settingsScroll.MaxY <= 0 {
+		t.Fatal("settings should be scrollable at this size")
+	}
+	a.settingsScroll.Y = a.settingsScroll.MaxY
+	tt.Frame()
+	if tt.HasText("HttpOnly") {
+		t.Fatal("technical cookie description remains")
+	}
+}

@@ -46,6 +46,8 @@ type application struct {
 	query, status, priority, order  string
 	logQuery, level                 string
 	streamList, logList, recordList ui.ListState
+	settingsScroll                  ui.ScrollState
+	toasts                          []string
 
 	addOpen, renameOpen, removeOpen bool
 	addID, addName                  string
@@ -249,6 +251,14 @@ func (a *application) view(c *ui.Context) {
 	}
 	c.SetTheme(palette(dark))
 	t := c.Theme()
+	if a.message != "" {
+		c.AddToast(ui.Toast{Title: a.message, Type: "error", Timeout: 6 * time.Second})
+		a.message = ""
+	}
+	for _, message := range a.toasts {
+		c.AddToast(ui.Toast{Title: message, Type: "success"})
+	}
+	a.toasts = nil
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.sidebar(c)
 		ui.Column(c).Grow(1).MinWidth(0).Padding(28).Gap(22).Children(func() {
@@ -264,9 +274,6 @@ func (a *application) view(c *ui.Context) {
 				a.settings(c)
 			default:
 				a.streamers(c)
-			}
-			if a.message != "" {
-				ui.Text(c, a.message).TextColor(t.Danger).MaxLines(3).Selectable()
 			}
 		})
 	})
@@ -302,10 +309,23 @@ func (a *application) sidebar(c *ui.Context) {
 			}
 			ui.Text(c, "●  "+ffmpeg).FontSize(12).TextColor(color)
 			listener := "Native listener: " + a.snapshot.Listener.State
+			listenerColor := t.TextMuted
+			switch a.snapshot.Listener.State {
+			case "connecting", "retrying", "partial", "unavailable":
+				listenerColor = t.Warning
+			case "connected":
+				listenerColor = t.Success
+			case "error":
+				listenerColor = t.Danger
+			}
 			if !a.store.Config().NativeListening {
 				listener = "Queued polling"
+				listenerColor = t.TextMuted
 			}
-			ui.Text(c, listener).FontSize(11).TextColor(t.TextMuted).MaxLines(2)
+			ui.Row(c).AlignItems(ui.Center).Gap(7).Children(func() {
+				ui.Icon(c, connectionIcon).Size(15, 15).TextColor(listenerColor)
+				ui.Text(c, listener).FontSize(11).TextColor(listenerColor).MaxLines(2).Grow(1)
+			})
 			ui.Text(c, "v"+Version).FontSize(10).TextColor(t.TextMuted)
 		})
 	})

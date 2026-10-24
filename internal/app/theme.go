@@ -46,3 +46,6 @@ func icon(name string) *ui.SVG {
 }
 
 var navIcons = map[string]*ui.SVG{"streamers": icon("list-check"), "recordings": icon("folder"), "logs": icon("file-text"), "settings": icon("settings")}
+
+var dotsIcon = icon("dots")
+var connectionIcon = icon("connection")

@@ -95,7 +95,9 @@ func (a *application) streamers(c *ui.Context) {
 					}
 					ui.Text(c, label).FontSize(11).TextColor(t.TextMuted)
 				case 6:
-					ui.Button(c, "•••").Label("Actions for "+r.Streamer.DisplayName()).Size(32, 30).Menu(func(m *ui.Menu) { a.streamMenu(m, r) })
+					ui.ButtonBase(c).Label("Actions for "+r.Streamer.DisplayName()).Size(32, 30).Radius(5).Border(1, t.Border).Background(t.Surface).Children(func() {
+						ui.Icon(c, dotsIcon).Size(18, 18)
+					}).Menu(func(m *ui.Menu) { a.streamMenu(m, r) })
 				}
 			}).Grow(1).MinHeight(0).FillWidth()
 		}
@@ -278,14 +280,19 @@ func (a *application) settings(c *ui.Context) {
 				a.update(func() {
 					a.cfg = a.store.Config()
 					a.ffmpeg = ffmpegErr == nil
-					a.message = "Settings saved."
+					a.toasts = append(a.toasts, "Settings saved")
 					mygo.Theme.SetSource(mygo.ThemeSource(cfg.Theme))
 				})
 				return nil
 			})
 		}
 	})
-	ui.Scroll(c).Grow(1).MinHeight(0).FillWidth().Gap(18).Children(func() {
+	ui.Scroll(c).TrackScroll(&a.settingsScroll).Grow(1).MinHeight(0).FillWidth().Gap(18).DrawOver(func(p *ui.Painter, r ui.Rect) {
+		if remaining := a.settingsScroll.MaxY - a.settingsScroll.Y; remaining > 1 {
+			height := min(float32(32), r.H)
+			p.FillGradient(ui.Rect{X: r.X, Y: r.Y + r.H - height, W: max(0, r.W-12), H: height}, ui.LinearGradient{From: t.Background.Alpha(0), To: t.Background.Alpha(min(1, remaining/height)), Angle: 180}, 0)
+		}
+	}).Children(func() {
 		section(c, "Monitoring", "Native notifications are the default. Regular polling runs only when you explicitly select it below.", func() {
 			toggle(c, "Native live notifications", "One shared BIGO connection, authenticated with your web cookie. Automatically follows monitored accounts and enables their live notices.", &a.cfg.NativeListening)
 			if a.cfg.NativeListening {
@@ -328,8 +335,7 @@ func (a *application) settings(c *ui.Context) {
 				ui.Text(c, a.accountMessage).TextColor(color).Selectable()
 			}
 			ui.Text(c, "1. Sign in at bigo.tv in Brave or Chrome.\n2. Open Developer Tools → Application → Cookies → https://www.bigo.tv.\n3. Copy the Value of uniqid and paste it above. Validate, then Save settings.").FontSize(12).TextColor(t.TextMuted).Selectable()
-			ui.Text(c, "uniqid is HttpOnly, so document.cookie cannot export it. A copied Cookie header also works. Expired cookies need replacing.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
-			ui.Text(c, "Use this account in only one native listener at a time. Another app or terminal listener using it can disconnect this app.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
+			ui.Text(c, "Use this account in only one native listener at a time. Another app or browser connected with this account can disconnect this app.").FontSize(11).TextColor(t.Danger).MaxLines(3)
 		})
 		section(c, "Polling queue", "Checks are serialized and spaced globally. Streamers being recorded are excluded from API checks.", func() {
 			ui.Row(c).Gap(18).FillWidth().Children(func() {
@@ -374,7 +380,7 @@ func (a *application) settings(c *ui.Context) {
 				ui.Text(c, "Appearance").Grow(1)
 				ui.Select(c, &a.cfg.Theme, []string{"system", "dark", "light"}).Width(150).Label("Appearance")
 			})
-			toggle(c, "Notify when recording starts", "“<Streamer> is live. Your recording has started.” OS notification permissions also apply.", &a.cfg.Notifications)
+			toggle(c, "Notify when recording starts", "", &a.cfg.Notifications)
 			ui.Text(c, "Config, data, and circular logs: "+a.store.Directory()).FontSize(11).TextColor(t.TextMuted).Selectable()
 			ui.Row(c).Gap(10).Children(func() {
 				if ui.Button(c, "Open configuration folder").Clicked() {
@@ -433,7 +439,13 @@ func (a *application) dialogs(c *ui.Context) {
 			}
 			if ui.PrimaryButton(c, "Remove streamer").Clicked() {
 				id := a.removeID
-				a.work(func() error { return a.engine.Remove(id) })
+				a.work(func() error {
+					if err := a.engine.Remove(id); err != nil {
+						return err
+					}
+					a.update(func() { a.toasts = append(a.toasts, "Streamer removed") })
+					return nil
+				})
 				a.removeOpen = false
 			}
 		})
