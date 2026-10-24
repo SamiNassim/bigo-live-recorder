@@ -46,6 +46,7 @@ const (
 	maxFrameSize                = 4 << 20
 	linkdIOTimeout              = 15 * time.Second
 	linkdPingEvery              = 20 * time.Second
+	linkdIdleTimeout            = 3 * linkdPingEvery
 	legacyRSAKeyBits            = 512
 	legacyRSAExponent           = 65537
 	// BIGO uses 0 for an active foreground client and 7 for a background one.
@@ -78,6 +79,7 @@ type linkdClient struct {
 	pendingEvents []liveEvent
 	writeMu       sync.Mutex
 	seq           uint32
+	lastReceived  time.Time
 	session       Session
 }
 
@@ -481,7 +483,11 @@ func (c *linkdClient) readFrame(ctx context.Context) (linkdFrame, error) {
 			if len(c.recvPlain) >= length {
 				raw := append([]byte(nil), c.recvPlain[:length]...)
 				c.recvPlain = c.recvPlain[length:]
-				return parseFrame(raw)
+				frame, err := parseFrame(raw)
+				if err == nil {
+					c.lastReceived = time.Now()
+				}
+				return frame, err
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -776,7 +782,13 @@ func (c *linkdClient) waitLiveEvent(ctx context.Context) (liveEvent, error) {
 		return event, nil
 	}
 	nextPing := time.Now().Add(linkdPingEvery)
+	if c.lastReceived.IsZero() {
+		c.lastReceived = time.Now()
+	}
 	for {
+		if time.Since(c.lastReceived) >= linkdIdleTimeout {
+			return liveEvent{}, errors.New("BIGO connection stopped responding to heartbeats")
+		}
 		readFor := time.Until(nextPing)
 		if readFor <= 0 {
 			if err := c.sendPing(); err != nil {

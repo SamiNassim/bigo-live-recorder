@@ -16,6 +16,7 @@ const (
 	hubRestartDebounce  = 250 * time.Millisecond
 	hubMinRetryDelay    = 2 * time.Second
 	hubMaxRetryDelay    = 30 * time.Second
+	hubBootstrapTimeout = 45 * time.Second
 	targetMinRetryDelay = 30 * time.Second
 	targetMaxRetryDelay = 5 * time.Minute
 )
@@ -436,7 +437,9 @@ func (h *Hub) connectAndListen(
 	subscribed map[uint32]bool,
 	rejected map[uint32]targetRejection,
 ) error {
-	session, err := h.source(ctx, snapshot.deviceID)
+	bootstrapCtx, cancelBootstrap := context.WithTimeout(ctx, hubBootstrapTimeout)
+	session, err := h.source(bootstrapCtx, snapshot.deviceID)
+	cancelBootstrap()
 	if err != nil {
 		return fmt.Errorf("refresh BIGO messaging ticket: %w", err)
 	}
@@ -444,7 +447,9 @@ func (h *Hub) connectAndListen(
 	if ctx.Err() != nil || !ready || latest.configKey != snapshot.configKey {
 		return errHubReconfigured
 	}
-	client, endpoint, err := h.dial(ctx, session)
+	dialCtx, cancelDial := context.WithTimeout(ctx, hubBootstrapTimeout)
+	client, endpoint, err := h.dial(dialCtx, session)
+	cancelDial()
 	if err != nil {
 		return err
 	}
@@ -478,7 +483,7 @@ func (h *Hub) connectAndListen(
 		h.lastError = ""
 		h.mu.Unlock()
 		if announcedVersion != activeSnapshot.version && h.info != nil {
-			h.info(fmt.Sprintf("BIGO native listener active for %d/%d streamer(s) via %s (web cookie; one shared connection)", readyTargetCount, len(activeSnapshot.targets), endpoint))
+			h.info(fmt.Sprintf("BIGO native listener active for %d/%d streamer(s) via %s", readyTargetCount, len(activeSnapshot.targets), endpoint))
 			announcedVersion = activeSnapshot.version
 		}
 		h.setConnectedStatus(readyTargetCount, len(activeSnapshot.targets))
@@ -508,16 +513,20 @@ func (h *Hub) connectAndListen(
 		}
 
 		event, err := client.waitLiveEvent(waitCtx)
+		waitExpired := errors.Is(waitCtx.Err(), context.DeadlineExceeded)
 		waitCancel()
 		h.clearWaitCancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			if waitExpired && errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
 			latest, ready = h.snapshot()
+			if !ready || latest.configKey != snapshot.configKey {
+				return errHubReconfigured
+			}
 			if ready && latest.configKey == snapshot.configKey && latest.version != activeSnapshot.version && errors.Is(err, context.Canceled) {
 				activeSnapshot = latest
 				h.drainWake()
