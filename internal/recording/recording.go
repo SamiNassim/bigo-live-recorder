@@ -13,13 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"bigo-live-recorder/internal/bigo"
+	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/state"
 )
 
@@ -46,22 +46,7 @@ func (h *Handle) File() string       { return h.Path }
 func (h *Handle) Started() time.Time { return h.StartedAt }
 
 func FindFFmpeg(configured string) (string, error) {
-	candidates := []string{configured}
-	if configured == "" {
-		candidates = []string{"ffmpeg"}
-		if runtime.GOOS == "darwin" {
-			candidates = append(candidates, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
-		}
-		if executable, err := os.Executable(); err == nil {
-			candidates = append(candidates, filepath.Join(filepath.Dir(executable), "ffmpeg"), filepath.Join(filepath.Dir(executable), "ffmpeg.exe"))
-		}
-	}
-	for _, candidate := range candidates {
-		if path, err := exec.LookPath(candidate); err == nil {
-			return path, nil
-		}
-	}
-	return "", errors.New("FFmpeg was not found; install it or choose its executable in Settings")
+	return ffmpeg.Find(configured)
 }
 
 // Start returns only after FFmpeg has started. Context cancellation closes the

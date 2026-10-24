@@ -139,4 +139,18 @@ func TestFeedbackToastsExpireAcrossNavigation(t *testing.T) {
 	if tt.HasText("HttpOnly") {
 		t.Fatal("technical cookie description remains")
 	}
+	if tt.HasText("Choose FFmpeg…") || tt.HasText("FFmpeg executable") {
+		t.Fatal("manual FFmpeg path input remains")
+	}
+	a.ffmpegOpen = true
+	tt.Frame()
+	if !tt.HasText("Get ready to record") || !tt.HasText("Download and install") {
+		t.Fatal("FFmpeg setup prompt is missing")
+	}
+	if err := tt.Click("Later"); err != nil {
+		t.Fatal(err)
+	}
+	if a.ffmpegOpen {
+		t.Fatal("setup prompt could not be dismissed")
+	}
 }

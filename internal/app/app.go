@@ -49,13 +49,16 @@ type application struct {
 	settingsScroll                  ui.ScrollState
 	toasts                          []string
 
-	addOpen, renameOpen, removeOpen bool
-	addID, addName                  string
-	renameID, renameName, removeID  string
-	message, accountMessage         string
-	account                         *bigo.Account
-	busy, validating                bool
-	ffmpeg, preview                 bool
+	addOpen, renameOpen, removeOpen              bool
+	addID, addName                               string
+	renameID, renameName, removeID               string
+	message, accountMessage                      string
+	account                                      *bigo.Account
+	busy, validating                             bool
+	ffmpeg, preview                              bool
+	ffmpegOpen, ffmpegInstalling, ffmpegChecking bool
+	ffmpegProgress, ffmpegError                  string
+	ffmpegCancel                                 context.CancelFunc
 
 	normalSeconds, coldSeconds, delaySeconds float64
 	cookieEditedAt                           time.Time
@@ -191,6 +194,9 @@ func Run(dir string, preview bool) error {
 			{Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
 		}))
 		go a.updates()
+		if !a.preview {
+			a.checkFFmpeg(true)
+		}
 	})
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

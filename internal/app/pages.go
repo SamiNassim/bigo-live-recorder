@@ -367,13 +367,24 @@ func (a *application) settings(c *ui.Context) {
 			if a.cfg.ConvertToMP4 {
 				toggle(c, "Delete MKV after successful conversion", "The source is removed only after FFmpeg succeeds and the MP4 is nonempty.", &a.cfg.DeleteAfterConversion)
 			}
-			ui.Row(c).FillWidth().Gap(10).Children(func() {
-				ui.TextInput(c, &a.cfg.FFmpegPath).Placeholder("ffmpeg (from PATH)").Grow(1).Height(34).Label("FFmpeg executable")
-				if ui.Button(c, "Choose FFmpeg…").Clicked() {
-					a.choosePath(false, &a.cfg.FFmpegPath)
+			ui.Row(c).AlignItems(ui.Center).FillWidth().Gap(12).Children(func() {
+				label := "FFmpeg is ready"
+				color := t.Success
+				if !a.ffmpeg {
+					label = "FFmpeg is required to record"
+					color = t.Warning
+				}
+				if a.ffmpegChecking {
+					label = "Checking FFmpeg…"
+				}
+				ui.Text(c, label).FontSize(12).TextColor(color).Grow(1)
+				if !a.ffmpeg && ui.Button(c, "Install FFmpeg…").Disabled(a.ffmpegChecking || a.preview).Clicked() {
+					a.ffmpegOpen = true
+				}
+				if ui.Button(c, "Check again").Disabled(a.ffmpegChecking || a.ffmpegInstalling || a.preview).Clicked() {
+					a.checkFFmpeg(false)
 				}
 			})
-			ui.Text(c, "FFmpeg is the only external runtime dependency. Install it separately or select the executable above.").FontSize(11).TextColor(t.TextMuted)
 		})
 		section(c, "Application", "Appearance, desktop notifications, and local files.", func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
@@ -395,6 +406,7 @@ func (a *application) settings(c *ui.Context) {
 }
 
 func (a *application) dialogs(c *ui.Context) {
+	a.ffmpegDialog(c)
 	ui.Modal(c, &a.addOpen, func() {
 		ui.Text(c, "Add a streamer").FontSize(22).FontWeight(600)
 		ui.Text(c, "Paste a BIGO profile URL, or enter an ID or alias.").TextColor(c.Theme().TextMuted)
