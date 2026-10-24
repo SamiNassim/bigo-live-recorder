@@ -48,12 +48,12 @@ type application struct {
 	streamList, logList, recordList ui.ListState
 
 	addOpen, renameOpen, removeOpen bool
-	addID, addName                               string
-	renameID, renameName, removeID               string
-	message, accountMessage                      string
-	account                                      *bigo.Account
-	busy, validating                             bool
-	ffmpeg, preview                              bool
+	addID, addName                  string
+	renameID, renameName, removeID  string
+	message, accountMessage         string
+	account                         *bigo.Account
+	busy, validating                bool
+	ffmpeg, preview                 bool
 
 	normalSeconds, coldSeconds, delaySeconds float64
 	cookieEditedAt                           time.Time
@@ -209,6 +209,8 @@ func Run(dir string, preview bool) error {
 func (a *application) updates() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	maintenance := time.NewTicker(5 * time.Second)
+	defer maintenance.Stop()
 	var events <-chan monitor.Event
 	if a.engine != nil {
 		events = a.engine.Events()
@@ -217,6 +219,12 @@ func (a *application) updates() {
 		select {
 		case <-a.ctx.Done():
 			return
+		case <-maintenance.C:
+			if !a.preview {
+				if _, err := a.store.PruneMissingRecordings(); err != nil {
+					a.log.Write("WARN", "recordings", "Reconcile deleted recordings: "+err.Error())
+				}
+			}
 		case <-tick.C:
 			a.update(a.refresh)
 		case event := <-events:
