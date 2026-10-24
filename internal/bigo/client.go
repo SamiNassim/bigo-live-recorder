@@ -141,19 +141,29 @@ func (c *Client) Configure(cookie string, delay time.Duration) {
 	c.delay = max(delay, time.Millisecond)
 }
 func (c *Client) wait(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if d := time.Until(c.next); d > 0 {
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		c.mu.Lock()
+		d := time.Until(c.next)
+		if d <= 0 {
+			c.next = time.Now().Add(c.delay)
+			cookie := c.cookie
+			c.mu.Unlock()
+			return cookie, nil
+		}
+		// Never hold the configuration lock during a rate-limit wait. A long
+		// Retry-After must not block settings or another caller's cancellation.
+		c.mu.Unlock()
 		t := time.NewTimer(d)
-		defer t.Stop()
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return "", ctx.Err()
 		case <-t.C:
 		}
 	}
-	c.next = time.Now().Add(c.delay)
-	return c.cookie, nil
 }
 func (c *Client) Account(ctx context.Context) (Account, error) {
 	var p struct {
