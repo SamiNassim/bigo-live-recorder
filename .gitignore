@@ -1,0 +1,9 @@
+AGENTS.md
+/build/
+/.local/
+*.log
+*.log.*
+.DS_Store
+*.exe
+*.test
+
