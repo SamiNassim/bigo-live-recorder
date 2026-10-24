@@ -302,6 +302,30 @@ func number(c *ui.Context, label string, value *float64, lo, hi float64) {
 	})
 }
 
+func (a *application) pollingQueue(c *ui.Context) {
+	inactive := a.cfg.NativeListening && !a.cfg.PollingBackup
+	ui.Column(c).FillWidth().Disabled(inactive).Children(func() {
+		section(c, "Polling queue", "Checks are serialized and spaced globally. Streamers being recorded are excluded from API checks.", func() {
+			ui.Row(c).Gap(18).FillWidth().Children(func() {
+				number(c, "Normal interval (seconds)", &a.normalSeconds, 10, 1800)
+				number(c, "Low-priority interval (seconds)", &a.coldSeconds, 10, 7200)
+				number(c, "Between requests (seconds)", &a.delaySeconds, 1, 30)
+			})
+			eligible := a.snapshot.QueueTargets
+			cfg := a.cfg
+			cfg.PollSeconds = int(a.normalSeconds)
+			cfg.ColdSeconds = int(a.coldSeconds)
+			cfg.RequestDelaySeconds = int(a.delaySeconds)
+			normal, cold := monitor.EffectiveIntervals(cfg, max(eligible, 0))
+			ui.Text(c, fmt.Sprintf("Queue calculator · %d eligible streamers\nEstimated cadence: normal %s  /  low priority %s\nQueue floor: %s. Network latency can increase these estimates.", eligible, duration(normal), duration(cold), duration(time.Duration(max(eligible, 0)*cfg.RequestDelaySeconds)*time.Second))).Padding(14).FillWidth().Radius(6).Background(c.Theme().Accent.Alpha(0.08)).FontSize(12)
+			if inactive {
+				ui.Text(c, "Native-only mode: these intervals are inactive except for initial and event-triggered checks.").FontSize(11).TextColor(c.Theme().TextMuted)
+			}
+			toggle(c, "Promote low-priority streamers when live", "Move a low-priority account to the normal queue after recording starts.", &a.cfg.AutoPromote)
+		})
+	})
+}
+
 func (a *application) settings(c *ui.Context) {
 	t := c.Theme()
 	header(c, "Settings", "One BIGO account, native notifications, and your recording workflow.", func() {
@@ -375,24 +399,7 @@ func (a *application) settings(c *ui.Context) {
 			ui.Text(c, "1. Sign in at bigo.tv in Brave or Chrome.\n2. Open Developer Tools → Application → Cookies → https://www.bigo.tv.\n3. Copy the Value of uniqid and paste it above. Validate, then Save settings.").FontSize(12).TextColor(t.TextMuted).Selectable()
 			ui.Text(c, "Use this account in only one native listener at a time. Another app or browser connected with this account can disconnect this app.").FontSize(11).TextColor(t.Danger).MaxLines(3)
 		})
-		section(c, "Polling queue", "Checks are serialized and spaced globally. Streamers being recorded are excluded from API checks.", func() {
-			ui.Row(c).Gap(18).FillWidth().Children(func() {
-				number(c, "Normal interval (seconds)", &a.normalSeconds, 10, 1800)
-				number(c, "Low-priority interval (seconds)", &a.coldSeconds, 10, 7200)
-				number(c, "Between requests (seconds)", &a.delaySeconds, 1, 30)
-			})
-			eligible := a.snapshot.QueueTargets
-			cfg := a.cfg
-			cfg.PollSeconds = int(a.normalSeconds)
-			cfg.ColdSeconds = int(a.coldSeconds)
-			cfg.RequestDelaySeconds = int(a.delaySeconds)
-			normal, cold := monitor.EffectiveIntervals(cfg, max(eligible, 0))
-			ui.Text(c, fmt.Sprintf("Queue calculator · %d eligible streamers\nEstimated cadence: normal %s  /  low priority %s\nQueue floor: %s. Network latency can increase these estimates.", eligible, duration(normal), duration(cold), duration(time.Duration(max(eligible, 0)*cfg.RequestDelaySeconds)*time.Second))).Padding(14).FillWidth().Radius(6).Background(t.Accent.Alpha(0.08)).FontSize(12)
-			if a.cfg.NativeListening && !a.cfg.PollingBackup {
-				ui.Text(c, "Native-only mode: these intervals are inactive except for initial and event-triggered checks.").FontSize(11).TextColor(t.TextMuted)
-			}
-			toggle(c, "Promote low-priority streamers when live", "Move a low-priority account to the normal queue after recording starts.", &a.cfg.AutoPromote)
-		})
+		a.pollingQueue(c)
 		section(c, "Recording", "The original audio and video are copied, not re-encoded. Short MKV clusters limit damage if the process crashes.", func() {
 			ui.Row(c).FillWidth().Gap(10).Children(func() {
 				ui.TextInput(c, &a.cfg.RecordingPath).Grow(1).Label("Recording folder").Height(34)

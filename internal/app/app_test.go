@@ -210,3 +210,62 @@ func TestFeedbackToastsExpireAcrossNavigation(t *testing.T) {
 		t.Fatal("setup prompt could not be dismissed")
 	}
 }
+
+func TestPollingQueueAvailability(t *testing.T) {
+	a := &application{cfg: state.Defaults()}
+	a.loadNumbers()
+	tt := ui.NewTester(a.pollingQueue, 1000, 400)
+	for _, mode := range []struct {
+		name           string
+		native, backup bool
+		inactive       bool
+	}{
+		{"native only", true, false, true},
+		{"native with backup", true, true, false},
+		{"polling only", false, false, false},
+		{"polling with saved backup", false, true, false},
+		{"native only again", true, false, true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			a.cfg.NativeListening, a.cfg.PollingBackup = mode.native, mode.backup
+			before := []float64{a.normalSeconds, a.coldSeconds, a.delaySeconds}
+			promote := a.cfg.AutoPromote
+			tt.Frame()
+			if got := []float64{a.normalSeconds, a.coldSeconds, a.delaySeconds}; !slices.Equal(got, before) || a.cfg.AutoPromote != promote {
+				t.Fatal("changing monitoring mode reset queue settings")
+			}
+			for i, label := range []string{"Normal interval (seconds)", "Low-priority interval (seconds)", "Between requests (seconds)"} {
+				r, ok := tt.Find(label)
+				if !ok {
+					t.Fatal("missing queue input", label)
+				}
+				increase, ok := tt.Find("Increase")
+				if !ok {
+					t.Fatal("missing number input controls")
+				}
+				// The label is above its input; all three inputs share a row.
+				tt.ClickAt(r.X+20, increase.Y+increase.H/2)
+				tt.Key(0, ui.KeyUp)
+				want := before[i]
+				if !mode.inactive {
+					want++
+				}
+				if got := []float64{a.normalSeconds, a.coldSeconds, a.delaySeconds}[i]; got != want {
+					t.Fatalf("%s = %v, want %v", label, got, want)
+				}
+			}
+			// Tab past the final number input's two step buttons to the switch.
+			for range 3 {
+				tt.Key(0, ui.KeyTab)
+			}
+			tt.Key(0, ui.KeySpace)
+			want := promote
+			if !mode.inactive {
+				want = !want
+			}
+			if a.cfg.AutoPromote != want {
+				t.Fatalf("auto-promote = %v, want %v", a.cfg.AutoPromote, want)
+			}
+		})
+	}
+}
