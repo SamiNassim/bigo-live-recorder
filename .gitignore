@@ -1,10 +1,36 @@
 AGENTS.md
 /build/
-/.local/
+.local/
 *.log
 *.log.*
 .DS_Store
 *.exe
 *.test
 /mygo_*.syso
+
+# Local account data, private exports, and developer credentials are never source.
+config.json
+data.json
+*session*.json
+cookie.json
+cookies.json
+cookies.txt
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.bundle
+.snapshot-*.tmp
+
+# Personal recordings and network captures.
+*.mkv
+*.mp4
+*.ts
+*.har
+*.saz
+*.pcap
+*.pcapng
 
