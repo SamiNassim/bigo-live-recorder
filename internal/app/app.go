@@ -428,22 +428,30 @@ func (a *application) seedPreview() {
 	a.snapshot.Listener.Message = "Shared native listener connected · 6 subscriptions ready"
 	for i, name := range []string{"Luna", "Maya", "Nora", "Clara", "Sofia", "Elena"} {
 		s := state.Streamer{ID: fmt.Sprintf("100120%d", i), Name: name, AddedAt: time.Now().Add(-24 * time.Hour), LastRecordedAt: time.Now().Add(-time.Duration(i) * time.Hour)}
-		r := monitor.Row{Streamer: s, Status: "Offline", LastCheck: time.Now().Add(-time.Minute)}
+		r := monitor.Row{Streamer: s, Status: "Offline", LastCheck: time.Now().Add(-time.Minute), LiveCheckedAt: time.Now().Add(-time.Minute)}
 		if i < 2 {
 			r.Status = "Recording"
+			r.Live = true
 			r.StartedAt = time.Now().Add(-time.Duration(14+i*11) * time.Minute)
 			a.snapshot.Recording++
 		}
 		if i == 4 {
-			r.Status = "Paused"
+			r.Status = "Monitoring paused"
 			r.Streamer.Paused = true
-			a.snapshot.Paused++
+			a.snapshot.MonitoringPaused++
+		}
+		if i == 3 {
+			r.Status = "Live"
+			r.Live = true
+			r.Streamer.RecordingPaused = true
+			a.snapshot.RecordingPaused++
 		}
 		if i == 5 {
 			r.Streamer.LowPriority = true
 		}
 		a.snapshot.Rows = append(a.snapshot.Rows, r)
 	}
+	a.snapshot.QueueTargets = len(a.snapshot.Rows) - a.snapshot.MonitoringPaused - a.snapshot.Recording
 }
 
 // Keep file-system operations outside view-building callbacks.

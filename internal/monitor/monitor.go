@@ -25,11 +25,14 @@ type Row struct {
 	Error                           string
 	LastCheck, NextCheck, StartedAt time.Time
 	Path                            string
+	Live                            bool
+	LiveCheckedAt                   time.Time
 }
 type Snapshot struct {
-	Rows              []Row
-	Listener          bigolistener.RuntimeStatus
-	Recording, Paused int
+	Rows                                         []Row
+	Listener                                     bigolistener.RuntimeStatus
+	Recording, MonitoringPaused, RecordingPaused int
+	QueueTargets                                 int
 }
 type Event struct{ Name, StreamerID, Path string }
 
@@ -54,8 +57,8 @@ type item struct {
 	pending           bool
 	retryUntil        time.Time
 	lastSignal        time.Time
-	holdRoom          string
 	handle            activeRecording
+	recordCancel      context.CancelFunc
 	unsubscribe       func()
 	subUID            uint32
 	bootstrapFailures int
@@ -164,33 +167,95 @@ func (e *Engine) Add(id, name string) error {
 	return err
 }
 func (e *Engine) Edit(id string, change func(*state.Streamer)) error {
+	var before, after state.Streamer
 	err := e.store.Update(func(d *state.Data) error {
 		for i := range d.Streamers {
 			if d.Streamers[i].ID == id {
+				before = d.Streamers[i]
 				change(&d.Streamers[i])
+				after = d.Streamers[i]
 				return nil
 			}
 		}
 		return errors.New("streamer no longer exists")
 	})
+	if err == nil && (before.Paused != after.Paused || before.RecordingPaused != after.RecordingPaused) {
+		e.mu.Lock()
+		if it := e.items[id]; it != nil {
+			it.row.Streamer.Paused = after.Paused
+			it.row.Streamer.RecordingPaused = after.RecordingPaused
+			it.initial = false
+			it.pending = false
+			it.bootstrapFailures = 0
+			it.retryUntil = time.Time{}
+			it.row.Error = ""
+			it.row.NextCheck = time.Now()
+			if after.Paused || after.RecordingPaused {
+				stopRecording(it)
+			}
+			if it.handle == nil {
+				it.row.Status = "Waiting"
+				if after.Paused {
+					it.row.Status = "Monitoring paused"
+					it.row.NextCheck = time.Time{}
+				}
+			}
+		}
+		e.mu.Unlock()
+	}
 	e.wakeUp()
 	return err
 }
+
+// SetRecordingPaused changes only automatic recording, not the subscription or
+// polling preference. Resuming schedules a fresh check, even in native-only mode.
+func (e *Engine) SetRecordingPaused(id string, paused bool) error {
+	if err := e.Edit(id, func(s *state.Streamer) { s.RecordingPaused = paused }); err != nil {
+		return err
+	}
+	message := "Recording enabled"
+	if paused {
+		message = "Recording paused"
+	}
+	e.log.Write("INFO", id, message)
+	return nil
+}
+
+func (e *Engine) SetMonitoringPaused(id string, paused bool) error {
+	if err := e.Edit(id, func(s *state.Streamer) { s.Paused = paused }); err != nil {
+		return err
+	}
+	message := "Monitoring resumed"
+	if paused {
+		message = "Monitoring paused"
+	}
+	e.log.Write("INFO", id, message)
+	return nil
+}
+
+func stopRecording(it *item) {
+	if it.handle != nil {
+		it.row.Status = "Finalizing"
+		it.handle.Stop()
+	} else if it.recordCancel != nil {
+		it.recordCancel()
+	}
+}
+
 func (e *Engine) Remove(id string) error {
 	err := e.store.Update(func(d *state.Data) error {
 		d.Streamers = slices.DeleteFunc(d.Streamers, func(s state.Streamer) bool { return s.ID == id })
 		return nil
 	})
+	if err == nil {
+		e.mu.Lock()
+		if it := e.items[id]; it != nil {
+			stopRecording(it)
+		}
+		e.mu.Unlock()
+	}
 	e.wakeUp()
 	return err
-}
-func (e *Engine) Stop(id string) {
-	e.mu.Lock()
-	if it := e.items[id]; it != nil && it.handle != nil {
-		it.row.Status = "Finalizing"
-		it.handle.Stop()
-	}
-	e.mu.Unlock()
 }
 func (e *Engine) Snapshot() Snapshot {
 	s := Snapshot{Listener: e.hub.Status()}
@@ -199,15 +264,21 @@ func (e *Engine) Snapshot() Snapshot {
 	defer e.mu.Unlock()
 	for _, it := range e.items {
 		s.Rows = append(s.Rows, it.row)
-		if it.handle != nil {
+		if it.handle != nil && it.row.Status == "Recording" {
 			s.Recording++
 		}
+		if !it.row.Streamer.Paused && it.handle == nil {
+			s.QueueTargets++
+		}
 		if it.row.Streamer.Paused {
-			s.Paused++
+			s.MonitoringPaused++
+		}
+		if it.row.Streamer.RecordingPaused {
+			s.RecordingPaused++
 		}
 	}
 	if cfg.NativeListening {
-		s.Listener.TotalTargets = len(s.Rows) - s.Paused
+		s.Listener.TotalTargets = len(s.Rows) - s.MonitoringPaused
 		if s.Listener.Connected && s.Listener.ReadyTargets < s.Listener.TotalTargets {
 			s.Listener.State = "partial"
 			s.Listener.Message = fmt.Sprintf("Native connection active; %d/%d subscriptions ready. Some targets are still resolving or need attention.", s.Listener.ReadyTargets, s.Listener.TotalTargets)
@@ -290,10 +361,9 @@ func (e *Engine) reconcile() {
 		}
 		if s.Paused {
 			if it.handle != nil {
-				it.handle.Stop()
-				it.row.Status = "Finalizing"
+				stopRecording(it)
 			} else {
-				it.row.Status = "Paused"
+				it.row.Status = "Monitoring paused"
 			}
 			if it.unsubscribe != nil {
 				it.unsubscribe()
@@ -301,6 +371,9 @@ func (e *Engine) reconcile() {
 				it.subUID = 0
 			}
 			continue
+		}
+		if s.RecordingPaused && it.handle != nil {
+			stopRecording(it)
 		}
 		if !cfg.NativeListening && it.unsubscribe != nil {
 			it.unsubscribe()
@@ -319,11 +392,10 @@ func (e *Engine) reconcile() {
 				go e.listen(watchCtx, s.ID, ch)
 			}
 		}
-		if it.row.Status == "Paused" {
+		if it.row.Status == "Monitoring paused" {
 			it.row.Status = "Waiting"
 			it.initial = false
 			it.bootstrapFailures = 0
-			it.holdRoom = ""
 			it.row.NextCheck = time.Now()
 		}
 		if cfg.NativeListening && !cfg.PollingBackup && strings.TrimSpace(cfg.Cookie) == "" && it.handle == nil {
@@ -336,12 +408,15 @@ func (e *Engine) reconcile() {
 	}
 	for id, it := range e.items {
 		if !seen[id] {
+			if it.handle == nil && it.recordCancel != nil {
+				it.recordCancel()
+			}
 			if it.unsubscribe != nil {
 				it.unsubscribe()
 				it.unsubscribe = nil
 			}
 			if it.handle != nil {
-				it.handle.Stop()
+				stopRecording(it)
 				select {
 				case <-it.handle.Done():
 					e.completed(it)
@@ -402,13 +477,17 @@ func (e *Engine) listen(ctx context.Context, id string, ch <-chan bigolistener.N
 			}
 			e.mu.Lock()
 			it := e.items[id]
-			if it != nil && it.handle == nil && !it.row.Streamer.Paused && time.Since(it.lastSignal) > 30*time.Second {
+			if it != nil && (it.handle == nil || it.row.Streamer.RecordingPaused) && !it.row.Streamer.Paused && time.Since(it.lastSignal) > 30*time.Second {
 				it.lastSignal = time.Now()
 				it.pending = true
 				it.retryUntil = time.Now().Add(2 * time.Minute)
 				it.row.NextCheck = time.Now()
 				if n.Attributed {
-					e.log.Write("INFO", id, "Native live signal received; verifying playback")
+					message := "Native live signal received; verifying playback"
+					if it.row.Streamer.RecordingPaused {
+						message = "Native live signal received; checking presence (recording paused)"
+					}
+					e.log.Write("INFO", id, message)
 				} else {
 					e.log.Write("DEBUG", id, "Unattributed native activity; verifying this subscription (not a confirmed live start)")
 				}
@@ -422,16 +501,23 @@ func (e *Engine) listen(ctx context.Context, id string, ch <-chan bigolistener.N
 func (e *Engine) check(id string) {
 	e.mu.Lock()
 	it := e.items[id]
-	if it == nil {
+	if it == nil || it.handle != nil || it.row.Streamer.Paused {
 		e.mu.Unlock()
 		return
 	}
 	it.row.Status = "Checking"
 	needsUID := it.row.Streamer.UID == 0
 	bootstrap := !it.initial
+	presenceOnly := it.row.Streamer.RecordingPaused
 	e.mu.Unlock()
-	stream, err := e.client.Check(e.ctx, id)
-	if stream.UID == 0 && needsUID && e.store.Config().NativeListening {
+	var stream bigo.Stream
+	var err error
+	if presenceOnly {
+		stream, err = e.client.Presence(e.ctx, id)
+	} else {
+		stream, err = e.client.Check(e.ctx, id)
+	}
+	if !presenceOnly && stream.UID == 0 && needsUID && e.store.Config().NativeListening {
 		if presence, presenceErr := e.client.Presence(e.ctx, id); presenceErr == nil {
 			stream.UID = presence.UID
 		} else if err == nil {
@@ -448,6 +534,14 @@ func (e *Engine) check(id string) {
 	if it == nil {
 		return
 	}
+	current := e.store.Data()
+	at := slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
+	if at < 0 || current.Streamers[at].Paused {
+		it.row.Status = "Monitoring paused"
+		it.row.NextCheck = time.Time{}
+		return
+	}
+	it.row.Streamer.RecordingPaused = current.Streamers[at].RecordingPaused
 	it.initial = true
 	it.row.LastCheck = time.Now()
 	it.row.NextCheck = time.Now().Add(interval(cfg, it.row.Streamer.LowPriority))
@@ -472,6 +566,10 @@ func (e *Engine) check(id string) {
 	}
 	if err == nil && cfg.NativeListening && it.row.Streamer.UID == 0 {
 		err = fmt.Errorf("BIGO did not resolve a native UID for %s", id)
+	}
+	if err == nil || stream.Alive == 1 {
+		it.row.Live = stream.Alive == 1
+		it.row.LiveCheckedAt = time.Now()
 	}
 	if err != nil {
 		if it.row.Error != err.Error() {
@@ -501,28 +599,41 @@ func (e *Engine) check(id string) {
 	it.bootstrapFailures = 0
 	if stream.Alive != 1 {
 		it.row.Status = "Offline"
-		it.holdRoom = ""
 		it.pending = false
 		it.retryUntil = time.Time{}
 		return
 	}
-	if it.holdRoom != "" && (stream.RoomID == "" || stream.RoomID == it.holdRoom) {
-		it.row.Status = "Stopped"
+	if it.row.Streamer.RecordingPaused {
+		it.row.Status = "Live"
 		it.pending = false
+		it.retryUntil = time.Time{}
 		return
 	}
-	// A pause/remove made during the request takes precedence over its result.
-	current := e.store.Data()
-	at := slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
-	if at < 0 || current.Streamers[at].Paused {
+	// Recording was resumed while a presence-only request was in flight. Resolve
+	// playback now rather than trying to record a response with no media URL.
+	if presenceOnly {
+		it.initial = false
+		it.row.Status = "Waiting"
+		it.row.NextCheck = time.Now()
 		return
 	}
 	it.row.Status = "Starting"
 	streamer := it.row.Streamer
+	recordCtx, recordCancel := context.WithCancel(e.ctx)
+	it.recordCancel = recordCancel
 	e.mu.Unlock()
-	h, startErr := e.start(e.ctx, streamer, stream, cfg)
+	h, startErr := e.start(recordCtx, streamer, stream, cfg)
 	e.mu.Lock()
 	if startErr != nil {
+		canceled := recordCtx.Err() != nil
+		recordCancel()
+		it.recordCancel = nil
+		if canceled {
+			it.initial = false
+			it.row.Status = "Waiting"
+			it.row.NextCheck = time.Now()
+			return
+		}
 		it.row.Status = "Needs attention"
 		it.row.Error = startErr.Error()
 		e.log.Write("ERROR", id, startErr.Error())
@@ -535,10 +646,6 @@ func (e *Engine) check(id string) {
 		return
 	}
 	it.handle = h
-	it.holdRoom = stream.RoomID
-	if it.holdRoom == "" {
-		it.holdRoom = "unknown"
-	}
 	it.pending = false
 	it.retryUntil = time.Time{}
 	it.row.Status = "Recording"
@@ -560,7 +667,7 @@ func (e *Engine) check(id string) {
 	e.log.Write("INFO", id, "Recording started: "+h.File())
 	current = e.store.Data()
 	at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
-	if at < 0 || current.Streamers[at].Paused {
+	if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil {
 		h.Stop()
 		it.row.Status = "Finalizing"
 		return
@@ -591,15 +698,19 @@ func (e *Engine) completed(it *item) {
 	} else {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
 	}
-	// Natural termination may be transient. A manual stop retains the room hold.
-	if it.row.Status != "Finalizing" {
-		it.holdRoom = ""
+	immediate := it.row.Status == "Finalizing" || it.row.Streamer.RecordingPaused || it.row.Streamer.Paused
+	if it.recordCancel != nil {
+		it.recordCancel()
+		it.recordCancel = nil
 	}
 	it.handle = nil
 	it.row.StartedAt = time.Time{}
 	it.row.Path = ""
 	it.row.Status = "Waiting"
 	it.row.NextCheck = time.Now().Add(5 * time.Second)
+	if immediate {
+		it.row.NextCheck = time.Now()
+	}
 	// One end-of-recording verification can recover an interrupted HLS session.
 	it.initial = false
 }

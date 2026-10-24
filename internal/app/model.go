@@ -18,7 +18,7 @@ func filteredRows(rows []monitor.Row, query, status, priority, order string) []m
 		if query != "" && !strings.Contains(strings.ToLower(r.Streamer.DisplayName()+" "+r.Streamer.ID), query) {
 			continue
 		}
-		if status != "All statuses" && status != r.Status {
+		if !matchesStatus(r, status) {
 			continue
 		}
 		if priority == "Normal priority" && r.Streamer.LowPriority || priority == "Low priority" && !r.Streamer.LowPriority {
@@ -44,6 +44,21 @@ func filteredRows(rows []monitor.Row, query, status, priority, order string) []m
 		return n
 	})
 	return out
+}
+
+func matchesStatus(r monitor.Row, status string) bool {
+	switch status {
+	case "All statuses":
+		return true
+	case "Recording paused":
+		return r.Streamer.RecordingPaused
+	case "Monitoring paused":
+		return r.Streamer.Paused
+	case "Live":
+		return r.Live && !r.Streamer.Paused
+	default:
+		return status == r.Status
+	}
 }
 
 // Filter before virtualization, never after an arbitrary unfiltered tail limit.

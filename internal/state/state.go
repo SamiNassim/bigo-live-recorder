@@ -42,15 +42,16 @@ type Window struct {
 }
 
 type Streamer struct {
-	ID             string    `json:"id"`
-	UID            uint32    `json:"uid,omitempty"`
-	Name           string    `json:"name,omitempty"`
-	CustomName     string    `json:"custom_name,omitempty"`
-	Avatar         string    `json:"avatar,omitempty"`
-	Paused         bool      `json:"paused"`
-	LowPriority    bool      `json:"low_priority"`
-	AddedAt        time.Time `json:"added_at"`
-	LastRecordedAt time.Time `json:"last_recorded_at,omitempty"`
+	ID              string    `json:"id"`
+	UID             uint32    `json:"uid,omitempty"`
+	Name            string    `json:"name,omitempty"`
+	CustomName      string    `json:"custom_name,omitempty"`
+	Avatar          string    `json:"avatar,omitempty"`
+	Paused          bool      `json:"paused"`
+	RecordingPaused bool      `json:"recording_paused,omitempty"`
+	LowPriority     bool      `json:"low_priority"`
+	AddedAt         time.Time `json:"added_at"`
+	LastRecordedAt  time.Time `json:"last_recorded_at,omitempty"`
 }
 
 func (s Streamer) DisplayName() string {

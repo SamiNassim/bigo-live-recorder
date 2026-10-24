@@ -14,10 +14,12 @@ import (
 )
 
 type fakeClient struct {
-	calls   atomic.Int64
-	offline bool
-	entered chan struct{}
-	release chan struct{}
+	calls         atomic.Int64
+	presenceCalls atomic.Int64
+	presenceAlive *atomic.Bool
+	offline       bool
+	entered       chan struct{}
+	release       chan struct{}
 }
 
 func (c *fakeClient) Configure(string, time.Duration) {}
@@ -25,6 +27,14 @@ func (c *fakeClient) Messaging(context.Context, string) (bigo.MessagingCredentia
 	return bigo.MessagingCredentials{}, bigo.ErrLoginRequired
 }
 func (c *fakeClient) Presence(context.Context, string) (bigo.Stream, error) {
+	c.presenceCalls.Add(1)
+	alive := !c.offline
+	if c.presenceAlive != nil {
+		alive = c.presenceAlive.Load()
+	}
+	if alive {
+		return bigo.Stream{UID: 123, Alive: 1}, nil
+	}
 	return bigo.Stream{UID: 123}, nil
 }
 func (c *fakeClient) Check(ctx context.Context, id string) (bigo.Stream, error) {
@@ -50,9 +60,15 @@ type fakeRecording struct {
 	done    chan struct{}
 	once    sync.Once
 	started time.Time
+	name    string
 }
 
-func (h *fakeRecording) File() string          { return "/test/recording.mkv" }
+func (h *fakeRecording) File() string {
+	if h.name != "" {
+		return "/test/" + h.name + ".mkv"
+	}
+	return "/test/recording.mkv"
+}
 func (h *fakeRecording) Started() time.Time    { return h.started }
 func (h *fakeRecording) Stop()                 { h.once.Do(func() { close(h.done) }) }
 func (h *fakeRecording) Done() <-chan struct{} { return h.done }
@@ -179,7 +195,7 @@ func TestPauseWhileCheckIsInFlight(t *testing.T) {
 	close(client.release)
 	waitFor(t, func() bool {
 		snapshot := e.Snapshot()
-		return len(snapshot.Rows) == 1 && snapshot.Rows[0].Status == "Paused"
+		return len(snapshot.Rows) == 1 && snapshot.Rows[0].Status == "Monitoring paused"
 	})
 	if starts.Load() != 0 {
 		t.Fatal("recorded a paused streamer after an in-flight check")

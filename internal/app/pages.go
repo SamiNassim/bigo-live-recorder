@@ -17,7 +17,7 @@ import (
 
 func (a *application) streamers(c *ui.Context) {
 	t := c.Theme()
-	header(c, "Streamers", fmt.Sprintf("%d streamers  ·  %d recording  ·  %d paused", len(a.snapshot.Rows), a.snapshot.Recording, a.snapshot.Paused), func() {
+	header(c, "Streamers", fmt.Sprintf("%d streamers  ·  %d recording  ·  %d recording paused  ·  %d monitoring paused", len(a.snapshot.Rows), a.snapshot.Recording, a.snapshot.RecordingPaused, a.snapshot.MonitoringPaused), func() {
 		if ui.PrimaryButton(c, "+  Add streamer").Height(36).Clicked() {
 			a.addOpen = true
 		}
@@ -25,7 +25,7 @@ func (a *application) streamers(c *ui.Context) {
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 		ui.Row(c).Padding(16).Gap(10).Wrap().AlignItems(ui.Center).FillWidth().Children(func() {
 			ui.SearchField(c, &a.query).Placeholder("Search streamers…").Label("Search streamers").Grow(1).MinWidth(140).Height(34)
-			ui.Select(c, &a.status, []string{"All statuses", "Recording", "Offline", "Paused", "Needs attention", "Setup needed", "Waiting", "Stopped", "Finalizing"}).Width(144).Height(34).Label("Filter status")
+			ui.Select(c, &a.status, []string{"All statuses", "Recording", "Live", "Offline", "Recording paused", "Monitoring paused", "Needs attention", "Setup needed", "Waiting", "Finalizing"}).Width(160).Height(34).Label("Filter status")
 			ui.Select(c, &a.priority, []string{"All priorities", "Normal priority", "Low priority"}).Width(150).Height(34).Label("Filter priority")
 			ui.Select(c, &a.order, []string{"Last recorded", "Name", "Date added", "Status"}).Width(144).Height(34).Label("Sort streamers")
 		})
@@ -44,7 +44,7 @@ func (a *application) streamers(c *ui.Context) {
 				ui.Text(c, subtitle).TextColor(t.TextMuted)
 			})
 		} else {
-			columns := []ui.TableColumn{{Title: "Streamer", MinWidth: 160}, {Title: "Status", Width: 140}, {Title: "Duration", Width: 92}, {Title: "Last recorded", Width: 145}, {Title: "Next check", Width: 100}, {Title: "Priority", Width: 85}, {Title: "", ID: "actions", Width: 52, Fixed: true}}
+			columns := []ui.TableColumn{{Title: "Streamer", MinWidth: 160}, {Title: "Status", Width: 160}, {Title: "Duration", Width: 80}, {Title: "Last recorded", Width: 140}, {Title: "Next check", Width: 100}, {Title: "Priority", Width: 80}, {Title: "", ID: "actions", Width: 52, Fixed: true}}
 			ui.Table(c, &a.streamList, columns, len(rows), func(row, col int) {
 				r := rows[row]
 				switch col {
@@ -66,14 +66,35 @@ func (a *application) streamers(c *ui.Context) {
 					switch r.Status {
 					case "Recording":
 						color = t.Danger
-					case "Paused":
+					case "Live":
+						color = t.Success
+					case "Monitoring paused":
 						color = t.Warning
 					case "Checking", "Starting":
 						color = t.Accent
 					case "Needs attention":
 						color = t.Warning
 					}
-					ui.Text(c, "●  "+r.Status).FontSize(12).TextColor(color).Tooltip(r.Error)
+					ui.Column(c).Gap(4).Children(func() {
+						detail := r.Error
+						if !r.LiveCheckedAt.IsZero() {
+							if detail != "" {
+								detail += "\n"
+							}
+							detail += "Last verified: " + timestamp(r.LiveCheckedAt)
+						}
+						label := r.Status
+						if a.cfg.NativeListening && !a.cfg.PollingBackup && r.Streamer.RecordingPaused {
+							if label == "Live" {
+								label = "Live (last check)"
+							}
+							detail += "\nNative-only presence is last confirmed status; it is updated on events, not continuously polled."
+						}
+						ui.Text(c, "●  "+label).FontSize(12).TextColor(color).SingleLine().Tooltip(detail)
+						if r.Streamer.RecordingPaused && !r.Streamer.Paused {
+							ui.Text(c, "Recording paused").FontSize(10).TextColor(t.Warning)
+						}
+					})
 				case 2:
 					label := "—"
 					if !r.StartedAt.IsZero() {
@@ -123,8 +144,28 @@ func (a *application) streamMenu(m *ui.Menu, r monitor.Row) {
 	if s.Paused {
 		pause = "Resume monitoring"
 	}
+	recordingAction := "Pause recording"
+	if s.RecordingPaused {
+		recordingAction = "Resume recording"
+	}
+	if m.Item(recordingAction).Disabled(a.preview).Chosen() {
+		a.work(func() error {
+			if err := a.engine.SetRecordingPaused(s.ID, !s.RecordingPaused); err != nil {
+				return err
+			}
+			message := "Recording paused; monitoring remains active"
+			if s.RecordingPaused {
+				message = "Recording enabled; checking stream"
+			}
+			if s.Paused {
+				message = "Recording preference saved; monitoring is still paused"
+			}
+			a.update(func() { a.toasts = append(a.toasts, message) })
+			return nil
+		})
+	}
 	if m.Item(pause).Disabled(a.preview).Chosen() {
-		a.work(func() error { return a.engine.Edit(s.ID, func(v *state.Streamer) { v.Paused = !v.Paused }) })
+		a.work(func() error { return a.engine.SetMonitoringPaused(s.ID, !s.Paused) })
 	}
 	priority := "Set low priority"
 	if s.LowPriority {
@@ -135,9 +176,6 @@ func (a *application) streamMenu(m *ui.Menu, r monitor.Row) {
 	}
 	if r.Status == "Recording" {
 		m.Separator()
-		if m.Item("Stop recording").Chosen() {
-			a.engine.Stop(s.ID)
-		}
 		if m.Item("Show recording in folder").Chosen() {
 			a.reveal(r.Path)
 		}
@@ -343,7 +381,7 @@ func (a *application) settings(c *ui.Context) {
 				number(c, "Low-priority interval (seconds)", &a.coldSeconds, 10, 7200)
 				number(c, "Between requests (seconds)", &a.delaySeconds, 1, 30)
 			})
-			eligible := len(a.snapshot.Rows) - a.snapshot.Paused - a.snapshot.Recording
+			eligible := a.snapshot.QueueTargets
 			cfg := a.cfg
 			cfg.PollSeconds = int(a.normalSeconds)
 			cfg.ColdSeconds = int(a.coldSeconds)
