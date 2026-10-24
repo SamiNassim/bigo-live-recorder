@@ -13,14 +13,21 @@ func (a *application) checkFFmpeg(prompt bool) {
 		return
 	}
 	a.ffmpegChecking = true
-	configured := a.store.Config().FFmpegPath
+	configured := a.cfg.FFmpegPath
 	go func() {
 		_, err := ffmpeg.Check(a.ctx, configured)
 		a.update(func() {
 			a.ffmpegChecking = false
+			if a.cfg.FFmpegPath != configured {
+				a.ffmpeg = false
+				return
+			}
 			a.ffmpeg = err == nil
 			if err != nil && prompt {
 				a.ffmpegOpen = true
+			}
+			if err != nil && !prompt {
+				a.message = err.Error()
 			}
 			if err == nil && !prompt {
 				a.toasts = append(a.toasts, "FFmpeg is ready")
@@ -40,7 +47,7 @@ func (a *application) installFFmpeg() {
 	a.ffmpegProgress = "Starting download…"
 	go func() {
 		defer cancel()
-		_, err := ffmpeg.Install(ctx, func(p ffmpeg.Progress) {
+		installed, err := ffmpeg.Install(ctx, func(p ffmpeg.Progress) {
 			text := p.Stage
 			if p.Received > 0 {
 				text = fmt.Sprintf("Downloading FFmpeg… %.1f MB", float64(p.Received)/(1<<20))
@@ -51,9 +58,9 @@ func (a *application) installFFmpeg() {
 			a.update(func() { a.ffmpegProgress = text })
 		})
 		if err == nil {
-			// An old custom path must not hide the newly installed private copy.
+			// Show and persist the exact executable selected by the guided setup.
 			cfg := a.store.Config()
-			cfg.FFmpegPath = ""
+			cfg.FFmpegPath = installed
 			err = a.store.SaveConfig(cfg)
 		}
 		canceled := ctx.Err() != nil
@@ -69,7 +76,7 @@ func (a *application) installFFmpeg() {
 				a.ffmpegError = err.Error()
 				return
 			}
-			a.cfg.FFmpegPath = ""
+			a.cfg.FFmpegPath = installed
 			a.ffmpeg = true
 			a.ffmpegOpen = false
 			a.toasts = append(a.toasts, "FFmpeg installed. You’re ready to record.")

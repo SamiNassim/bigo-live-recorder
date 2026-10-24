@@ -411,6 +411,10 @@ func (a *application) choosePath(directory bool, destination *string) {
 				a.message = err.Error()
 			} else if len(paths) > 0 {
 				*destination = paths[0]
+				if destination == &a.cfg.FFmpegPath {
+					a.ffmpeg = false
+					a.checkFFmpeg(false)
+				}
 			}
 		})
 	}()

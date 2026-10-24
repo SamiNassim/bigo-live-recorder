@@ -139,8 +139,8 @@ func TestFeedbackToastsExpireAcrossNavigation(t *testing.T) {
 	if tt.HasText("HttpOnly") {
 		t.Fatal("technical cookie description remains")
 	}
-	if tt.HasText("Choose FFmpeg…") || tt.HasText("FFmpeg executable") {
-		t.Fatal("manual FFmpeg path input remains")
+	if !tt.HasText("Choose FFmpeg…") {
+		t.Fatal("FFmpeg path picker is missing")
 	}
 	a.ffmpegOpen = true
 	tt.Frame()

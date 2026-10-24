@@ -5,7 +5,6 @@ package ffmpeg
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,13 +25,13 @@ func ManagedPath() (string, error) {
 	return filepath.Join(dir, "BIGO Live Recorder", "bin", name), nil
 }
 
-// Find keeps legacy explicit paths working, without exposing a path preference
-// in the UI. Otherwise the private installation takes precedence over PATH.
+// Find uses an explicit selection when present. Automatic discovery prefers
+// PATH, then the private installation and common portable/package-manager paths.
 func Find(configured string) (string, error) {
 	candidates := []string{configured}
 	if configured == "" {
 		managed, _ := ManagedPath()
-		candidates = []string{managed, "ffmpeg"}
+		candidates = []string{"ffmpeg", managed}
 		if runtime.GOOS == "darwin" {
 			candidates = append(candidates, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
 		}
@@ -71,7 +70,7 @@ func probe(parent context.Context, path string) error {
 	configureCommand(cmd)
 	out, err := cmd.Output()
 	if err != nil || !strings.HasPrefix(string(out), "ffmpeg version ") {
-		return fmt.Errorf("FFmpeg could not start; install a compatible copy from Settings")
+		return errors.New("FFmpeg could not start; choose a compatible executable or install it from Settings")
 	}
 	return nil
 }

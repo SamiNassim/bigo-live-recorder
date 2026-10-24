@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/monitor"
-	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -267,7 +267,7 @@ func number(c *ui.Context, label string, value *float64, lo, hi float64) {
 func (a *application) settings(c *ui.Context) {
 	t := c.Theme()
 	header(c, "Settings", "One BIGO account, native notifications, and your recording workflow.", func() {
-		if ui.PrimaryButton(c, "Save settings").Disabled(a.busy || a.preview).Height(36).Clicked() {
+		if ui.PrimaryButton(c, "Save settings").Disabled(a.busy || a.preview || a.ffmpegInstalling).Height(36).Clicked() {
 			cfg := a.cfg
 			cfg.PollSeconds = int(a.normalSeconds)
 			cfg.ColdSeconds = int(a.coldSeconds)
@@ -276,7 +276,7 @@ func (a *application) settings(c *ui.Context) {
 				if err := a.engine.SaveConfig(cfg); err != nil {
 					return err
 				}
-				_, ffmpegErr := recording.FindFFmpeg(cfg.FFmpegPath)
+				_, ffmpegErr := ffmpeg.Check(a.ctx, cfg.FFmpegPath)
 				a.update(func() {
 					a.cfg = a.store.Config()
 					a.ffmpeg = ffmpegErr == nil
@@ -367,6 +367,15 @@ func (a *application) settings(c *ui.Context) {
 			if a.cfg.ConvertToMP4 {
 				toggle(c, "Delete MKV after successful conversion", "The source is removed only after FFmpeg succeeds and the MP4 is nonempty.", &a.cfg.DeleteAfterConversion)
 			}
+			ui.Row(c).FillWidth().Gap(10).Children(func() {
+				if ui.TextInput(c, &a.cfg.FFmpegPath).Placeholder("ffmpeg (from PATH)").Grow(1).Height(34).Label("FFmpeg executable").Disabled(a.ffmpegInstalling).Changed() {
+					a.ffmpeg = false
+				}
+				if ui.Button(c, "Choose FFmpeg…").Disabled(a.ffmpegInstalling || a.preview).Clicked() {
+					a.choosePath(false, &a.cfg.FFmpegPath)
+				}
+			})
+			ui.Text(c, "Leave blank to use FFmpeg from PATH or an automatically detected installation. Guided setup fills in its installed path.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
 			ui.Row(c).AlignItems(ui.Center).FillWidth().Gap(12).Children(func() {
 				label := "FFmpeg is ready"
 				color := t.Success
