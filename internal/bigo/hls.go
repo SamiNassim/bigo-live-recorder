@@ -27,10 +27,11 @@ type hlsSegment struct {
 }
 
 type hlsPlaylist struct {
-	segments []hlsSegment
-	variant  string
-	refresh  time.Duration
-	end      bool
+	segments              []hlsSegment
+	variant               string
+	refresh               time.Duration
+	end                   bool
+	explicitDiscontinuity bool
 }
 
 type hlsReadCloser struct {
@@ -82,21 +83,15 @@ func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer s
 }
 
 func readHLSStream(ctx context.Context, client *http.Client, output io.Writer, mediaURL, referer string, playlist hlsPlaylist) error {
-	var lastSequence uint64
-	var lastDiscontinuity uint64
-	hasSequence := false
+	var cursor hlsCursor
 	lastProgress := time.Now()
 	for {
-		for _, segment := range playlist.segments {
-			if hasSequence && (segment.discontinuity < lastDiscontinuity ||
-				(segment.discontinuity == lastDiscontinuity && segment.sequence <= lastSequence)) {
-				continue
-			}
+		segments := cursor.fresh(playlist, mediaURL)
+		for _, segment := range segments {
 			if err := writeHLSSegment(ctx, client, output, segment, referer); err != nil {
 				return err
 			}
-			lastSequence, hasSequence = segment.sequence, true
-			lastDiscontinuity = segment.discontinuity
+			cursor.accept(segment, playlist)
 			lastProgress = time.Now()
 		}
 		if playlist.end {
@@ -179,6 +174,7 @@ func parseHLSPlaylist(body []byte, base *url.URL) (hlsPlaylist, error) {
 			if err != nil || len(playlist.segments) > 0 {
 				return playlist, errors.New("BIGO HLS has an invalid discontinuity sequence")
 			}
+			playlist.explicitDiscontinuity = true
 		case line == "#EXT-X-DISCONTINUITY":
 			if discontinuity == ^uint64(0) {
 				return playlist, errors.New("BIGO HLS discontinuity sequence overflows")
