@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -112,6 +113,47 @@ func TestSidebarAccountTextStaysWithinItsColumn(t *testing.T) {
 				t.Fatal("sidebar footer overflowed compact window", r)
 			}
 		})
+	}
+}
+
+func TestSessionShortcutAnchorsAccountSettings(t *testing.T) {
+	for _, size := range [][2]int{{1050, 650}, {1400, 900}} {
+		for _, native := range []bool{true, false} {
+			a := accountFixture(t)
+			a.cfg.NativeListening = native
+			a.snapshot.Listener.Message = strings.Repeat("Waiting for the native listener to reconnect. ", 12)
+			tt := ui.NewTester(a.view, size[0], size[1])
+			for range 2 {
+				if err := tt.Click("BIGO session"); err != nil {
+					t.Fatal(err)
+				}
+				viewport, ok := tt.Find("Settings sections")
+				if !ok {
+					t.Fatal("settings scroller missing")
+				}
+				heading, ok := tt.Find("BIGO account")
+				if !ok || math.Abs(float64(heading.Y-viewport.Y-21)) > 1 {
+					t.Fatalf("account heading not at the top: heading=%+v viewport=%+v native=%v", heading, viewport, native)
+				}
+				if a.accountSettingsRequested {
+					t.Fatal("account anchor request was not consumed")
+				}
+				a.settingsScroll.Y = a.settingsScroll.MaxY
+				tt.Frame()
+				if a.settingsScroll.Y != a.settingsScroll.MaxY {
+					t.Fatal("account anchor prevented scrolling away")
+				}
+			}
+			if err := tt.Click("Streamers"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tt.Click("Settings"); err != nil {
+				t.Fatal(err)
+			}
+			if a.settingsScroll.Y != a.settingsScroll.MaxY {
+				t.Fatal("ordinary navigation reset the settings scroll position")
+			}
+		}
 	}
 }
 

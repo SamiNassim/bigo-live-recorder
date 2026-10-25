@@ -59,5 +59,6 @@ func (a *application) sessionIndicator(c *ui.Context) {
 		})
 	}).Clicked() {
 		a.page = "settings"
+		a.accountSettingsRequested = true
 	}
 }

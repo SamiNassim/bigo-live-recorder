@@ -47,6 +47,7 @@ type application struct {
 	logQuery, level                 string
 	streamList, logList, recordList ui.ListState
 	settingsScroll                  ui.ScrollState
+	accountSettingsRequested        bool
 	toasts                          []string
 
 	addOpen, renameOpen, removeOpen              bool

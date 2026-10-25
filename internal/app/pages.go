@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -274,9 +275,9 @@ func (a *application) recordings(c *ui.Context) {
 	})
 }
 
-func section(c *ui.Context, title, subtitle string, body func()) {
+func section(c *ui.Context, title, subtitle string, body func()) ui.Element {
 	t := c.Theme()
-	ui.Column(c).FillWidth().Padding(20).Gap(15).Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
+	return ui.Column(c).FillWidth().Padding(20).Gap(15).Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 		ui.Text(c, title).FontSize(16).FontWeight(600)
 		if subtitle != "" {
 			ui.Text(c, subtitle).TextColor(t.TextMuted).FontSize(12).MaxLines(3)
@@ -349,7 +350,15 @@ func (a *application) settings(c *ui.Context) {
 			})
 		}
 	})
-	ui.Scroll(c).TrackScroll(&a.settingsScroll).Grow(1).MinHeight(0).FillWidth().Gap(18).DrawOver(func(p *ui.Painter, r ui.Rect) {
+	if a.accountSettingsRequested {
+		// Reveal from below so the native scroller aligns the section's start,
+		// rather than only bringing its bottom into view. Layout sets the offset.
+		a.settingsScroll.Y = math.MaxInt32
+	}
+	ui.Scroll(c).Label("Settings sections").TrackScroll(&a.settingsScroll).Grow(1).MinHeight(0).FillWidth().Gap(18).DrawOver(func(p *ui.Painter, r ui.Rect) {
+		// A click can rebuild the view more than once before layout. Keep the
+		// reveal request until the requested frame has actually been drawn.
+		a.accountSettingsRequested = false
 		if remaining := a.settingsScroll.MaxY - a.settingsScroll.Y; remaining > 1 {
 			height := min(float32(32), r.H)
 			p.FillGradient(ui.Rect{X: r.X, Y: r.Y + r.H - height, W: max(0, r.W-12), H: height}, ui.LinearGradient{From: t.Background.Alpha(0), To: t.Background.Alpha(min(1, remaining/height)), Angle: 180}, 0)
@@ -375,7 +384,7 @@ func (a *application) settings(c *ui.Context) {
 			ui.Text(c, "●  "+message).FontSize(12).TextColor(color).MaxLines(4)
 			ui.Text(c, fmt.Sprintf("%d / %d native subscriptions ready", a.snapshot.Listener.ReadyTargets, a.snapshot.Listener.TotalTargets)).FontSize(11).TextColor(t.TextMuted)
 		})
-		section(c, "BIGO account", "One cookie for native notifications and recording. No Android session, emulator, or running browser is needed.", func() {
+		accountSection := section(c, "BIGO account", "One cookie for native notifications and recording. No Android session, emulator, or running browser is needed.", func() {
 			ui.Row(c).Gap(10).FillWidth().Children(func() {
 				if ui.TextInput(c, &a.cfg.Cookie).Password().Placeholder("Paste the uniqid cookie value").Label("BIGO web cookie").Grow(1).Height(34).Changed() {
 					a.cookieChanged()
@@ -401,6 +410,9 @@ func (a *application) settings(c *ui.Context) {
 				ui.Text(c, "Use this account in only one native listener at a time. Another app or browser connected with this account can disconnect this app.\nMake sure live notifications are enabled in your BIGO account settings.").Grow(1).MinWidth(0).FontSize(11)
 			})
 		})
+		if a.accountSettingsRequested {
+			accountSection.ScrollIntoView()
+		}
 		a.pollingQueue(c)
 		section(c, "Recording", "The original audio and video are copied, not re-encoded. Short MKV clusters limit damage if the process crashes.", func() {
 			ui.Row(c).FillWidth().Gap(10).Children(func() {
