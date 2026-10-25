@@ -4,5 +4,6 @@
   "version": "0.1.0",
   "icon": "internal/assets/icon.png",
   "out": "build",
+  "resources": ["CREDITS.md", "LICENSE"],
   "linux": { "categories": ["AudioVideo", "Video"] }
 }
