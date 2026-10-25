@@ -34,6 +34,7 @@ func (a *application) streamers(c *ui.Context) {
 		rows := filteredRows(a.snapshot.Rows, a.query, a.status, a.priority, a.order)
 		a.streamList.Key = func(i int) any { return rows[i].Streamer.ID }
 		a.streamList.KeepOffset = true
+		a.streamList.CellMenu = func(m *ui.Menu, row, _ int) { a.streamMenu(m, rows[row]) }
 		if len(rows) == 0 {
 			ui.Column(c).Grow(1).FillWidth().Center().Gap(12).Children(func() {
 				title, subtitle := "No streamers yet", "Set up your session in Settings, then add a BIGO ID."
@@ -50,7 +51,7 @@ func (a *application) streamers(c *ui.Context) {
 				r := rows[row]
 				switch col {
 				case 0:
-					ui.Row(c).Height(58).Gap(12).AlignItems(ui.Center).ContextMenu(func(m *ui.Menu) { a.streamMenu(m, r) }).Children(func() {
+					ui.Row(c).Height(58).Gap(12).AlignItems(ui.Center).Children(func() {
 						initial, _ := utf8.DecodeRuneInString(r.Streamer.DisplayName())
 						if avatar := a.avatars[r.Streamer.Avatar]; avatar != nil {
 							ui.Image(c, avatar).Size(34, 34).Radius(17)
@@ -235,7 +236,11 @@ func (a *application) logsPage(c *ui.Context) {
 
 func (a *application) recordings(c *ui.Context) {
 	t := c.Theme()
+	hasCompleted := slices.ContainsFunc(a.data.Recordings, func(r state.Recording) bool { return !r.EndedAt.IsZero() })
 	header(c, "Recordings", "Original quality. Local files. Short-cluster Matroska by default.", func() {
+		if ui.Button(c, "Clear history…").Disabled(a.busy || a.preview || !hasCompleted).Clicked() {
+			a.clearHistoryOpen = true
+		}
 		if ui.PrimaryButton(c, "Open recordings folder").Clicked() {
 			a.openFolder(a.cfg.RecordingPath)
 		}
@@ -243,6 +248,9 @@ func (a *application) recordings(c *ui.Context) {
 	recordings := slices.Clone(a.data.Recordings)
 	slices.SortFunc(recordings, func(a, b state.Recording) int { return b.StartedAt.Compare(a.StartedAt) })
 	a.recordList.Key = func(i int) any { return recordings[i].ID }
+	a.recordList.KeepOffset = true
+	services := c.Services()
+	a.recordList.CellMenu = func(m *ui.Menu, row, _ int) { a.recordingMenu(m, recordings[row], services) }
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 		ui.Table(c, &a.recordList, []ui.TableColumn{{Title: "Streamer", Width: 150}, {Title: "Started", Width: 150}, {Title: "Duration", Width: 90}, {Title: "Size", Width: 85}, {Title: "File", MinWidth: 140}, {Title: "", ID: "open", Width: 75}}, len(recordings), func(row, col int) {
 			r := recordings[row]
@@ -271,7 +279,7 @@ func (a *application) recordings(c *ui.Context) {
 				}
 			}
 		}).Grow(1).MinHeight(0).FillWidth()
-		ui.Text(c, fmt.Sprintf("%d recordings in history · files are never removed when a streamer is deleted", len(recordings))).FontSize(11).TextColor(t.TextMuted).Padding(14, 18)
+		ui.Text(c, fmt.Sprintf("%d recordings in history · clearing history never deletes files", len(recordings))).FontSize(11).TextColor(t.TextMuted).Padding(14, 18)
 	})
 }
 
@@ -475,6 +483,7 @@ func (a *application) settings(c *ui.Context) {
 
 func (a *application) dialogs(c *ui.Context) {
 	a.ffmpegDialog(c)
+	a.recordingHistoryDialog(c)
 	ui.Modal(c, &a.addOpen, func() {
 		ui.Text(c, "Add a streamer").FontSize(22).FontWeight(600)
 		ui.Text(c, "Paste a BIGO profile URL, or enter an ID or alias.").TextColor(c.Theme().TextMuted)

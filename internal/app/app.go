@@ -48,6 +48,7 @@ type application struct {
 	streamList, logList, recordList ui.ListState
 	settingsScroll                  ui.ScrollState
 	accountSettingsRequested        bool
+	clearHistoryOpen                bool
 	toasts                          []string
 
 	addOpen, renameOpen, removeOpen              bool
