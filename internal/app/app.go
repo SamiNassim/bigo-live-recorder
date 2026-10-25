@@ -54,6 +54,8 @@ type application struct {
 	renameID, renameName, removeID               string
 	message, accountMessage                      string
 	account                                      *bigo.Account
+	accountCookie                                string
+	accountError                                 error
 	busy, validating                             bool
 	ffmpeg, preview                              bool
 	ffmpegOpen, ffmpegInstalling, ffmpegChecking bool
@@ -256,6 +258,7 @@ func (a *application) view(c *ui.Context) {
 		dark = a.cfg.Theme == "dark"
 	}
 	c.SetTheme(palette(dark))
+	a.autoValidateCookie(c)
 	t := c.Theme()
 	if a.message != "" {
 		c.AddToast(ui.Toast{Title: a.message, Type: "error", Timeout: 6 * time.Second})
@@ -307,6 +310,7 @@ func (a *application) sidebar(c *ui.Context) {
 		}).Width(192).Grow(1).Background(background)
 		ui.Column(c).Padding(14, 10).Gap(12).Children(func() {
 			ui.Divider(c)
+			a.sessionIndicator(c)
 			ffmpeg := "FFmpeg not found"
 			color := t.Warning
 			if a.ffmpeg {
@@ -356,12 +360,17 @@ func (a *application) validateCookie() {
 	raw := a.cfg.Cookie
 	a.cookieLastChecked = raw
 	cookie, err := bigo.ParseCookie(raw)
+	a.account = nil
+	a.accountCookie = ""
+	a.accountError = err
 	if err != nil || cookie == "" {
 		a.accountMessage = "Paste the uniqid cookie first."
+		if err != nil {
+			a.accountMessage = err.Error()
+		}
 		return
 	}
 	a.validating = true
-	a.account = nil
 	a.accountMessage = "Validating account…"
 	go func() {
 		client := bigo.NewClient()
@@ -376,9 +385,12 @@ func (a *application) validateCookie() {
 				return
 			}
 			if err != nil {
+				a.accountError = err
 				a.accountMessage = err.Error()
 			} else {
 				a.account = &account
+				a.accountCookie = cookie
+				a.accountError = nil
 				a.accountMessage = "Authenticated as " + account.Name + " · BIGO ID " + account.ID
 			}
 		})
@@ -389,6 +401,8 @@ func (a *application) cookieChanged() {
 	a.cookieEditedAt = time.Now()
 	a.cookieLastChecked = ""
 	a.account = nil
+	a.accountCookie = ""
+	a.accountError = nil
 	a.accountMessage = ""
 }
 

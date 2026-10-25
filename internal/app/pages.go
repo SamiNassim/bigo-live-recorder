@@ -35,7 +35,7 @@ func (a *application) streamers(c *ui.Context) {
 		a.streamList.KeepOffset = true
 		if len(rows) == 0 {
 			ui.Column(c).Grow(1).FillWidth().Center().Gap(12).Children(func() {
-				title, subtitle := "No streamers yet", "Add a BIGO ID, then set up your session in Settings."
+				title, subtitle := "No streamers yet", "Set up your session in Settings, then add a BIGO ID."
 				if len(a.snapshot.Rows) > 0 {
 					title = "No matching streamers"
 					subtitle = "Try another search or filter."
@@ -388,7 +388,6 @@ func (a *application) settings(c *ui.Context) {
 					a.validateCookie()
 				}
 			})
-			a.autoValidateCookie(c)
 			if a.accountMessage != "" {
 				color := t.Warning
 				if a.account != nil {
