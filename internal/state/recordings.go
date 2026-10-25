@@ -8,6 +8,38 @@ import (
 	"strings"
 )
 
+// RemoveRecording removes one finalized history entry, never its media file.
+// Active entries are retained so finalization can still update their metadata.
+func (s *Store) RemoveRecording(id string) error {
+	return s.Update(func(d *Data) error {
+		i := slices.IndexFunc(d.Recordings, func(r Recording) bool { return r.ID == id })
+		if i < 0 {
+			return errors.New("recording is no longer in history")
+		}
+		if d.Recordings[i].EndedAt.IsZero() {
+			return errors.New("active recordings remain in history until finalized")
+		}
+		d.Recordings = slices.Delete(d.Recordings, i, i+1)
+		return nil
+	})
+}
+
+// ClearRecordingHistory forgets finalized recordings without deleting media.
+// The update is serialized with recording starts and finalization.
+func (s *Store) ClearRecordingHistory() (int, error) {
+	removed := 0
+	err := s.Update(func(d *Data) error {
+		before := len(d.Recordings)
+		d.Recordings = slices.DeleteFunc(d.Recordings, func(r Recording) bool { return !r.EndedAt.IsZero() })
+		removed = before - len(d.Recordings)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
 // PruneMissingRecordings reconciles finalized history with external deletions.
 // It never deletes media. Active files, permission errors and unavailable
 // recording folders are preserved, including recordings on disconnected disks.
