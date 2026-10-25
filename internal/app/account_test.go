@@ -96,12 +96,13 @@ func TestSidebarAccountTextStaysWithinItsColumn(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := strings.Repeat("9", 64)
-			a.account = &bigo.Account{Name: name, ID: id}
+			a.account = &bigo.Account{Name: name, ID: id, Avatar: "https://cdn.example/avatar.png"}
+			a.avatars[a.account.Avatar] = a.logo
 			a.accountCookie = a.cfg.Cookie
 			tt := ui.NewTester(a.view, 1050, 650)
 			for _, label := range []string{strings.TrimSpace(name), "BIGO ID " + id} {
 				r, ok := tt.Find(label)
-				if !ok || r.X < 0 || r.X+r.W > 220 || r.W > 172 {
+				if !ok || r.X < 0 || r.X+r.W > 220 || r.W > 130 {
 					t.Fatalf("account text escaped sidebar: %+v (%v)", r, ok)
 				}
 			}
@@ -113,6 +114,47 @@ func TestSidebarAccountTextStaysWithinItsColumn(t *testing.T) {
 				t.Fatal("sidebar footer overflowed compact window", r)
 			}
 		})
+	}
+}
+
+func TestSidebarAvatarUsesOnlyVerifiedSessionAndCachedImage(t *testing.T) {
+	a := accountFixture(t)
+	a.cfg.Cookie = "synthetic-cookie"
+	if err := a.store.SaveConfig(a.cfg); err != nil {
+		t.Fatal(err)
+	}
+	address := "https://cdn.example/avatar.png"
+	a.account = &bigo.Account{ID: "900000001", Name: "Demo Viewer", Avatar: address}
+	a.accountCookie = a.cfg.Cookie
+	tt := ui.NewTester(a.view, 1050, 650)
+	if _, ok := tt.Find("BIGO account avatar placeholder"); !ok {
+		t.Fatal("avatar has no placeholder before the image is cached")
+	}
+	a.avatars[address] = a.logo
+	tt.Frame()
+	r, ok := tt.Find("BIGO account avatar")
+	if !ok || r.W != 32 || r.H != 32 || r.X < 0 || r.X+r.W > 220 {
+		t.Fatal("cached avatar missing or escaped the sidebar", r)
+	}
+	name, _ := tt.Find("Demo Viewer")
+	if name.X < r.X+r.W {
+		t.Fatal("avatar overlaps the account name")
+	}
+	if len(a.avatarLoading) != 0 {
+		t.Fatal("rendering the avatar initiated another image download")
+	}
+	for _, cookie := range []string{"different-synthetic-cookie", ""} {
+		a.accountCookie = cookie
+		tt.Frame()
+		if _, ok := tt.Find("BIGO account avatar"); ok {
+			t.Fatal("avatar from an unverified or different account is visible")
+		}
+	}
+	a.accountCookie = a.cfg.Cookie
+	a.account.Avatar = ""
+	tt.Frame()
+	if _, ok := tt.Find("BIGO account avatar"); ok {
+		t.Fatal("avatar retained after account stopped supplying one")
 	}
 }
 

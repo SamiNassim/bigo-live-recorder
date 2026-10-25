@@ -35,6 +35,29 @@ func TestFlexibleIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountIncludesAvatarInOneRequest(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/usercenter/getUserInfo" {
+			t.Errorf("unexpected account request: %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `{"code":0,"data":{"bigo_id":"900000001","nick_name":"Demo Viewer","data5":"https://cdn.example/avatar.png"}}`)
+	}))
+	defer srv.Close()
+	c := NewClient()
+	c.http = srv.Client()
+	c.base = srv.URL
+	c.Configure("synthetic-cookie", time.Millisecond)
+	account, err := c.Account(context.Background())
+	if err != nil || account.ID != "900000001" || account.Name != "Demo Viewer" || account.Avatar != "https://cdn.example/avatar.png" {
+		t.Fatalf("account response: %+v, %v", account, err)
+	}
+	if calls != 1 {
+		t.Fatalf("account information required %d requests", calls)
+	}
+}
 func TestAuthenticatedClientAndGatedPresence(t *testing.T) {
 	for _, gated := range []bool{false, true} {
 		t.Run(fmt.Sprint(gated), func(t *testing.T) {

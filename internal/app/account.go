@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"bigo-live-recorder/internal/bigo"
 	"github.com/egoist/mygo/ui"
@@ -10,6 +11,7 @@ import (
 
 type sessionBadge struct {
 	name, detail, tooltip string
+	avatar                string
 	attention, invalid    bool
 }
 
@@ -32,7 +34,7 @@ func (a *application) sessionBadge() sessionBadge {
 		if name == "" {
 			name = "BIGO account"
 		}
-		return sessionBadge{name: name, detail: "BIGO ID " + a.account.ID, tooltip: name + "\nBIGO ID " + a.account.ID + "\nLast verified account for the saved session. Open Settings to validate again."}
+		return sessionBadge{name: name, detail: "BIGO ID " + a.account.ID, avatar: a.account.Avatar, tooltip: name + "\nBIGO ID " + a.account.ID + "\nLast verified account for the saved session. Open Settings to validate again."}
 	}
 	if a.validating || a.cookieLastChecked != a.cfg.Cookie {
 		return sessionBadge{name: "Checking session…", detail: "Verifying BIGO account", tooltip: "Checking the account associated with your saved session.", attention: true}
@@ -53,9 +55,21 @@ func (a *application) sessionIndicator(c *ui.Context) {
 		color = c.Theme().Danger
 	}
 	if ui.ButtonBase(c).Label("BIGO session").FillWidth().MinWidth(0).Padding(0).Tooltip(badge.tooltip).Children(func() {
-		ui.Column(c).FillWidth().MinWidth(0).Gap(4).Children(func() {
-			ui.Text(c, badge.name).FontSize(12).FontWeight(600).TextColor(color).FillWidth().MinWidth(0).SingleLine().Tooltip(badge.tooltip)
-			ui.Text(c, badge.detail).FontSize(10).TextColor(c.Theme().TextMuted).FillWidth().MinWidth(0).SingleLine().Tooltip(badge.tooltip)
+		ui.Row(c).FillWidth().MinWidth(0).Gap(10).AlignItems(ui.Center).Children(func() {
+			if badge.avatar != "" {
+				if avatar := a.avatars[badge.avatar]; avatar != nil {
+					ui.Image(c, avatar).Label("BIGO account avatar").Size(32, 32).Shrink(0).Radius(16)
+				} else {
+					initial, _ := utf8.DecodeRuneInString(badge.name)
+					ui.Box(c).Label("BIGO account avatar placeholder").Size(32, 32).Shrink(0).Radius(16).Background(c.Theme().Accent.Alpha(0.15)).Center().Children(func() {
+						ui.Text(c, strings.ToUpper(string(initial))).FontWeight(600).TextColor(c.Theme().Accent)
+					})
+				}
+			}
+			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+				ui.Text(c, badge.name).FontSize(12).FontWeight(600).TextColor(color).FillWidth().MinWidth(0).SingleLine().Tooltip(badge.tooltip)
+				ui.Text(c, badge.detail).FontSize(10).TextColor(c.Theme().TextMuted).FillWidth().MinWidth(0).SingleLine().Tooltip(badge.tooltip)
+			})
 		})
 	}).Clicked() {
 		a.page = "settings"
