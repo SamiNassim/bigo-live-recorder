@@ -272,7 +272,7 @@ func (a *application) recordings(c *ui.Context) {
 				}
 				ui.Text(c, label).FontSize(11)
 			case 4:
-				ui.Text(c, filepath.Base(r.Path)).FontSize(11).SingleLine().Tooltip(r.Path + "\n" + r.Error)
+				ui.Text(c, filepath.Base(r.Path)).FontSize(11).SingleLine().Tooltip(r.Path + "\n" + r.ProcessedPath + "\n" + r.Error)
 			case 5:
 				if ui.Button(c, "Show").Clicked() {
 					a.reveal(r.Path)
@@ -427,10 +427,15 @@ func (a *application) settings(c *ui.Context) {
 				}
 			})
 			toggle(c, "Separate folder for each streamer", "Folder names start with the BIGO ID, followed by the display name.", &a.cfg.FolderPerStreamer)
-			toggle(c, "Convert finalized recordings to MP4", "A codec-copy conversion runs after MKV finalization. The original remains unless you enable deletion.", &a.cfg.ConvertToMP4)
-			if a.cfg.ConvertToMP4 {
-				toggle(c, "Delete MKV after successful conversion", "The source is removed only after FFmpeg succeeds and the MP4 is nonempty.", &a.cfg.DeleteAfterConversion)
-			}
+			toggle(c, "Create a processed copy with FFmpeg", "Runs after the recording ends. The original MKV is always kept, even if processing fails.", &a.cfg.PostProcess)
+			ui.Column(c).FillWidth().Gap(10).Disabled(!a.cfg.PostProcess).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "Processed copy format").Grow(1)
+					ui.Select(c, &a.cfg.OutputExtension, []string{"mkv", "mp4", "ts"}).Width(130).Label("Processed copy format")
+				})
+				ui.TextInput(c, &a.cfg.FFmpegArgs).FillWidth().Height(36).Label("FFmpeg output options").Placeholder("-map 0:v? -map 0:a? -c copy")
+				ui.Text(c, "Output options only. The app supplies the input and output paths; no command name, -i, or placeholders. Example for MP4: -c copy -movflags +faststart").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
+			})
 			ui.Row(c).FillWidth().Gap(10).Children(func() {
 				if ui.TextInput(c, &a.cfg.FFmpegPath).Placeholder("ffmpeg (from PATH)").Grow(1).Height(34).Label("FFmpeg executable").Disabled(a.ffmpegInstalling).Changed() {
 					a.ffmpeg = false

@@ -126,20 +126,6 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		if size == 0 && err == nil {
 			err = errors.New("FFmpeg produced no media")
 		}
-		if cfg.ConvertToMP4 && size > 0 && waitErr == nil && parent.Err() == nil {
-			if converted, e := convert(parent, ffmpeg, path); e != nil {
-				err = errors.Join(err, e)
-			} else if cfg.DeleteAfterConversion {
-				if e = os.Remove(path); e != nil {
-					err = errors.Join(err, e)
-				} else {
-					path = converted
-					if info, e = os.Stat(path); e == nil {
-						size = info.Size()
-					}
-				}
-			}
-		}
 		h.result = Result{Path: path, Bytes: size, EndedAt: time.Now(), Err: err}
 	}()
 	return h, nil
@@ -164,24 +150,6 @@ func finish(cmd *exec.Cmd, wait <-chan error) error {
 		_ = cmd.Process.Kill()
 		return <-wait
 	}
-}
-
-func convert(parent context.Context, ffmpeg, source string) (string, error) {
-	target := strings.TrimSuffix(source, filepath.Ext(source)) + ".mp4"
-	// A failed or interrupted conversion never removes the original MKV.
-	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-i", source, "-map", "0", "-c", "copy", "-movflags", "+faststart", target)
-	configureCommand(cmd)
-	var tail tailBuffer
-	cmd.Stderr = &tail
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("MP4 conversion failed (MKV kept): %w: %s", err, tail.String())
-	}
-	if info, err := os.Stat(target); err != nil || info.Size() == 0 {
-		return "", errors.New("MP4 conversion produced no output; MKV kept")
-	}
-	return target, nil
 }
 
 func safeName(s string) string {

@@ -62,21 +62,24 @@ type item struct {
 	unsubscribe       func()
 	subUID            uint32
 	bootstrapFailures int
+	config            state.Config
 }
 
 type Engine struct {
-	store  *state.Store
-	log    *logging.Log
-	client streamClient
-	start  startRecording
-	hub    *bigolistener.Hub
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	items  map[string]*item
-	wake   chan struct{}
-	events chan Event
-	wg     sync.WaitGroup
+	store      *state.Store
+	log        *logging.Log
+	client     streamClient
+	start      startRecording
+	hub        *bigolistener.Hub
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	items      map[string]*item
+	wake       chan struct{}
+	events     chan Event
+	wg         sync.WaitGroup
+	processing chan struct{}
+	process    func(context.Context, string, state.Config) (string, error)
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {
@@ -91,7 +94,7 @@ func New(store *state.Store, log *logging.Log) *Engine {
 
 func newEngine(store *state.Store, log *logging.Log, client streamClient, start startRecording) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64)}
+	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64), processing: make(chan struct{}, 2), process: recording.Process}
 	e.recoverHistory()
 	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) })
 	e.configure(store.Config())
@@ -127,6 +130,11 @@ func (e *Engine) SaveConfig(c state.Config) error {
 	c.Cookie, err = bigo.ParseCookie(c.Cookie)
 	if err != nil {
 		return err
+	}
+	if c.PostProcess {
+		if _, err = recording.OutputArgs(c.FFmpegArgs); err != nil {
+			return err
+		}
 	}
 	if err = e.store.SaveConfig(c); err != nil {
 		return err
@@ -646,6 +654,7 @@ func (e *Engine) check(id string) {
 		return
 	}
 	it.handle = h
+	it.config = cfg
 	it.pending = false
 	it.retryUntil = time.Time{}
 	it.row.Status = "Recording"
@@ -697,6 +706,9 @@ func (e *Engine) completed(it *item) {
 		e.log.Write("WARN", it.row.Streamer.ID, "Recording ended: "+r.Err.Error())
 	} else {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
+	}
+	if it.config.PostProcess && r.Err == nil && r.Bytes > 0 && e.ctx.Err() == nil {
+		e.processCopy(it.row.Streamer.ID, r.Path, it.config)
 	}
 	immediate := it.row.Status == "Finalizing" || it.row.Streamer.RecordingPaused || it.row.Streamer.Paused
 	if it.recordCancel != nil {

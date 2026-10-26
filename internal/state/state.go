@@ -14,22 +14,23 @@ import (
 )
 
 type Config struct {
-	Window                Window `json:"window"`
-	Theme                 string `json:"theme"`
-	RecordingPath         string `json:"recording_path"`
-	FFmpegPath            string `json:"ffmpeg_path,omitempty"`
-	Cookie                string `json:"bigo_cookie,omitempty"`
-	NativeDeviceID        string `json:"native_device_id"`
-	NativeListening       bool   `json:"native_listening"`
-	PollingBackup         bool   `json:"polling_backup"`
-	PollSeconds           int    `json:"poll_seconds"`
-	ColdSeconds           int    `json:"cold_seconds"`
-	RequestDelaySeconds   int    `json:"request_delay_seconds"`
-	AutoPromote           bool   `json:"auto_promote"`
-	Notifications         bool   `json:"notifications"`
-	FolderPerStreamer     bool   `json:"folder_per_streamer"`
-	ConvertToMP4          bool   `json:"convert_to_mp4"`
-	DeleteAfterConversion bool   `json:"delete_after_conversion"`
+	Window              Window `json:"window"`
+	Theme               string `json:"theme"`
+	RecordingPath       string `json:"recording_path"`
+	FFmpegPath          string `json:"ffmpeg_path,omitempty"`
+	Cookie              string `json:"bigo_cookie,omitempty"`
+	NativeDeviceID      string `json:"native_device_id"`
+	NativeListening     bool   `json:"native_listening"`
+	PollingBackup       bool   `json:"polling_backup"`
+	PollSeconds         int    `json:"poll_seconds"`
+	ColdSeconds         int    `json:"cold_seconds"`
+	RequestDelaySeconds int    `json:"request_delay_seconds"`
+	AutoPromote         bool   `json:"auto_promote"`
+	Notifications       bool   `json:"notifications"`
+	FolderPerStreamer   bool   `json:"folder_per_streamer"`
+	PostProcess         bool   `json:"post_process"`
+	FFmpegArgs          string `json:"ffmpeg_args"`
+	OutputExtension     string `json:"output_extension"`
 }
 
 type Window struct {
@@ -65,14 +66,15 @@ func (s Streamer) DisplayName() string {
 }
 
 type Recording struct {
-	ID         string    `json:"id"`
-	StreamerID string    `json:"streamer_id"`
-	Name       string    `json:"name"`
-	Path       string    `json:"path"`
-	StartedAt  time.Time `json:"started_at"`
-	EndedAt    time.Time `json:"ended_at,omitempty"`
-	Bytes      int64     `json:"bytes"`
-	Error      string    `json:"error,omitempty"`
+	ID            string    `json:"id"`
+	StreamerID    string    `json:"streamer_id"`
+	Name          string    `json:"name"`
+	Path          string    `json:"path"`
+	StartedAt     time.Time `json:"started_at"`
+	EndedAt       time.Time `json:"ended_at,omitempty"`
+	Bytes         int64     `json:"bytes"`
+	Error         string    `json:"error,omitempty"`
+	ProcessedPath string    `json:"processed_path,omitempty"`
 }
 
 type Data struct {
@@ -85,7 +87,8 @@ func Defaults() Config {
 	home, _ := os.UserHomeDir()
 	return Config{Theme: "system", RecordingPath: filepath.Join(home, "Movies", "BIGO Live Recorder"), NativeListening: true,
 		NativeDeviceID: "web_" + rand.Text(),
-		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true}
+		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true,
+		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv"}
 }
 
 func (c Config) Validate() error {
@@ -106,6 +109,9 @@ func (c Config) Validate() error {
 	}
 	if c.RequestDelaySeconds < 1 || c.RequestDelaySeconds > 30 {
 		return errors.New("request delay must be between 1 and 30 seconds")
+	}
+	if c.OutputExtension != "mkv" && c.OutputExtension != "mp4" && c.OutputExtension != "ts" {
+		return errors.New("choose MKV, MP4, or TS for the optional processed copy")
 	}
 	return nil
 }
@@ -156,6 +162,25 @@ func Open(dir string) (*Store, error) {
 			_, hadNativeSession := fields["native_session"]
 			_, hadDeviceID := fields["native_device_id"]
 			migrateConfig = hadNativeSession || !hadDeviceID
+			_, hadPostProcess := fields["post_process"]
+			_, hadOutputFormat := fields["output_extension"]
+			_, hadOutputArgs := fields["ffmpeg_args"]
+			legacyConvert, hadConversion := fields["convert_to_mp4"]
+			_, hadDeletion := fields["delete_after_conversion"]
+			if hadConversion && !hadPostProcess {
+				if err := json.Unmarshal(legacyConvert, &s.config.PostProcess); err != nil {
+					return nil, fmt.Errorf("read legacy conversion preference: %w", err)
+				}
+				if s.config.PostProcess {
+					if !hadOutputFormat {
+						s.config.OutputExtension = "mp4"
+					}
+					if !hadOutputArgs {
+						s.config.FFmpegArgs += " -movflags +faststart"
+					}
+				}
+			}
+			migrateConfig = migrateConfig || hadConversion || hadDeletion || !hadPostProcess || !hadOutputFormat || !hadOutputArgs
 		}
 	}
 	if err := s.config.Validate(); err != nil {
@@ -164,11 +189,11 @@ func Open(dir string) (*Store, error) {
 	if s.data.Version != 1 {
 		return nil, fmt.Errorf("unsupported data.json version %d", s.data.Version)
 	}
-	// Drop the obsolete Android session only after both files were validated.
+	// Drop obsolete session and conversion fields only after both files validate.
 	// The existing web cookie, preferences, streamers and history are preserved.
 	if migrateConfig {
 		if err := writeJSON(filepath.Join(dir, "config.json"), s.config); err != nil {
-			return nil, fmt.Errorf("migrate cookie-only configuration: %w", err)
+			return nil, fmt.Errorf("migrate configuration: %w", err)
 		}
 	}
 	return s, nil
