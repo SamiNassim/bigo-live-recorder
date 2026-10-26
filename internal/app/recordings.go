@@ -18,6 +18,18 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 	if m.Item("Copy file path").Disabled(r.Path == "").Chosen() {
 		services.WriteClipboard(r.Path)
 	}
+	if r.ProcessedPath != "" {
+		m.Separator()
+		if m.Item("Open processed copy").Disabled(a.busy).Chosen() {
+			a.work(func() error { return mygo.Shell.OpenPath(r.ProcessedPath) })
+		}
+		if m.Item("Show processed copy in folder").Chosen() {
+			a.reveal(r.ProcessedPath)
+		}
+		if m.Item("Copy processed file path").Chosen() {
+			services.WriteClipboard(r.ProcessedPath)
+		}
+	}
 	m.Separator()
 	if m.Item("Remove from history").Disabled(a.busy || a.preview || r.EndedAt.IsZero()).Chosen() {
 		a.work(func() error {

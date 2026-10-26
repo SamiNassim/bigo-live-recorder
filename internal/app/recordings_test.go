@@ -52,8 +52,9 @@ func TestRecordingMenusCoverFullRowAndCopyPath(t *testing.T) {
 	a.page = "recordings"
 	now := time.Now()
 	path := filepath.Join(t.TempDir(), "demo.mkv")
+	processed := filepath.Join(t.TempDir(), "demo.processed.mp4")
 	a.data.Recordings = []state.Recording{
-		{ID: "done", Name: "Completed Demo", Path: path, StartedAt: now.Add(-time.Hour), EndedAt: now, Bytes: 1024},
+		{ID: "done", Name: "Completed Demo", Path: path, ProcessedPath: processed, StartedAt: now.Add(-time.Hour), EndedAt: now, Bytes: 1024},
 		{ID: "live", Name: "Active Demo", Path: filepath.Join(t.TempDir(), "active.mkv"), StartedAt: now},
 	}
 	tt := ui.NewTester(a.view, 1400, 900)
@@ -77,8 +78,21 @@ func TestRecordingMenusCoverFullRowAndCopyPath(t *testing.T) {
 	if tt.Clipboard() != path {
 		t.Fatal("copied the wrong recording path", tt.Clipboard())
 	}
+	tt.RightClickAt(file.X, label.Y+label.H/2)
+	if !slices.Contains(tt.Menu(), "Open processed copy") || !slices.Contains(tt.Menu(), "Show processed copy in folder") {
+		t.Fatal("processed copy actions missing", tt.Menu())
+	}
+	if err := tt.ChooseMenuItem("Copy processed file path"); err != nil {
+		t.Fatal(err)
+	}
+	if tt.Clipboard() != processed {
+		t.Fatal("copied the wrong processed path")
+	}
 	label, _ = tt.Find("Active Demo")
 	tt.RightClickAt(file.X, label.Y+label.H/2)
+	if slices.Contains(tt.Menu(), "Open processed copy") {
+		t.Fatal("processed copy action shown without an available copy")
+	}
 	for _, action := range []string{"Open recording", "Remove from history"} {
 		if err := tt.ChooseMenuItem(action); err == nil {
 			t.Fatal("active recording action was not disabled", action)
