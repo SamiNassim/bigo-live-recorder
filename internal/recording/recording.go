@@ -56,20 +56,15 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	if err != nil {
 		return nil, err
 	}
-	dir := cfg.RecordingPath
-	if cfg.FolderPerStreamer {
-		dir = filepath.Join(dir, safeName(s.DisplayName())+"_"+safeName(s.ID))
-	}
-	if err = os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create recording folder: %w", err)
-	}
 	stamp := time.Now()
 	var suffix [4]byte
 	if _, err = rand.Read(suffix[:]); err != nil {
 		return nil, err
 	}
-	name := safeName(s.DisplayName()) + "_" + stamp.Format("2006-01-02_15-04-05") + "_" + hex.EncodeToString(suffix[:]) + ".mkv"
-	path := filepath.Join(dir, name)
+	path := recordingPath(s, cfg, stamp, hex.EncodeToString(suffix[:]))
+	if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create recording folder: %w", err)
+	}
 	ctx, cancel := context.WithCancel(parent)
 	stream, err := bigo.OpenRecoveringStream(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
 	if err != nil {
@@ -148,6 +143,15 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		h.result = Result{Path: path, Bytes: size, EndedAt: time.Now(), Err: err}
 	}()
 	return h, nil
+}
+
+func recordingPath(s state.Streamer, cfg state.Config, stamp time.Time, suffix string) string {
+	id := safeName(s.ID)
+	dir := cfg.RecordingPath
+	if cfg.FolderPerStreamer {
+		dir = filepath.Join(dir, id+"_"+safeName(s.DisplayName()))
+	}
+	return filepath.Join(dir, id+"_"+stamp.Format("2006-01-02_15-04-05")+"_"+suffix+".mkv")
 }
 
 func finish(cmd *exec.Cmd, wait <-chan error) error {
