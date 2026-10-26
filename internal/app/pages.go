@@ -367,10 +367,7 @@ func (a *application) settings(c *ui.Context) {
 		// A click can rebuild the view more than once before layout. Keep the
 		// reveal request until the requested frame has actually been drawn.
 		a.accountSettingsRequested = false
-		if remaining := a.settingsScroll.MaxY - a.settingsScroll.Y; remaining > 1 {
-			height := min(float32(32), r.H)
-			p.FillGradient(ui.Rect{X: r.X, Y: r.Y + r.H - height, W: max(0, r.W-12), H: height}, ui.LinearGradient{From: t.Background.Alpha(0), To: t.Background.Alpha(min(1, remaining/height)), Angle: 180}, 0)
-		}
+		drawScrollFades(p, r, &a.settingsScroll, t.Background)
 	}).Children(func() {
 		section(c, "Monitoring", "Native notifications are the default. Regular polling runs only when you explicitly select it below.", func() {
 			toggle(c, "Native live notifications", "One shared BIGO connection, authenticated with your web cookie. Automatically follows monitored accounts and enables their live notices.", &a.cfg.NativeListening)
@@ -429,7 +426,7 @@ func (a *application) settings(c *ui.Context) {
 					a.choosePath(true, &a.cfg.RecordingPath)
 				}
 			})
-			toggle(c, "Separate folder for each streamer", "Keep recordings grouped by display name and BIGO ID.", &a.cfg.FolderPerStreamer)
+			toggle(c, "Separate folder for each streamer", "Folder names start with the BIGO ID, followed by the display name.", &a.cfg.FolderPerStreamer)
 			toggle(c, "Convert finalized recordings to MP4", "A codec-copy conversion runs after MKV finalization. The original remains unless you enable deletion.", &a.cfg.ConvertToMP4)
 			if a.cfg.ConvertToMP4 {
 				toggle(c, "Delete MKV after successful conversion", "The source is removed only after FFmpeg succeeds and the MP4 is nonempty.", &a.cfg.DeleteAfterConversion)
