@@ -117,6 +117,9 @@ func TestNotesUseDirectCommitsAndBodiesSincePreviousRelease(t *testing.T) {
 	if err != nil || !strings.Contains(first, "first feature") {
 		t.Fatal("first release could not generate notes", err)
 	}
+	if strings.HasPrefix(first, "# ") || strings.HasPrefix(notes, "# ") {
+		t.Fatal("release notes repeat GitHub's release title")
+	}
 }
 
 func TestWindowsReleaseContainsOnlyThePortableExecutable(t *testing.T) {

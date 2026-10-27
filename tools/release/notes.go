@@ -72,7 +72,6 @@ func formatNotes(changes []change, tag, previous, repo string) string {
 		groups[group] = append(groups[group], c)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", tag)
 	if repo != "" {
 		fmt.Fprintf(&b, "These builds do not use Apple or Windows publisher certificates. See the [first-launch instructions](%s/blob/%s/README.md#download-and-open).\n\n", repo, tag)
 	}
