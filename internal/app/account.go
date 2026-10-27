@@ -57,7 +57,7 @@ func (a *application) sessionIndicator(c *ui.Context) {
 	if ui.ButtonBase(c).Label("BIGO session").FillWidth().MinWidth(0).Padding(0).Tooltip(badge.tooltip).Children(func() {
 		ui.Row(c).FillWidth().MinWidth(0).Gap(10).AlignItems(ui.Center).Children(func() {
 			if badge.avatar != "" {
-				if avatar := a.avatars[badge.avatar]; avatar != nil {
+				if avatar := a.avatar(c, badge.avatar); avatar != nil {
 					ui.Image(c, avatar).Label("BIGO account avatar").Size(32, 32).Shrink(0).Radius(16)
 				} else {
 					initial, _ := utf8.DecodeRuneInString(badge.name)

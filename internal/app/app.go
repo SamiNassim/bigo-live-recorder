@@ -38,10 +38,15 @@ type application struct {
 	logo          *ui.Bitmap
 	avatars       map[string]*ui.Bitmap
 	avatarLoading map[string]bool
+	avatarUsed    map[string]uint64
+	avatarRetry   map[string]time.Time
+	avatarClock   uint64
 	cfg           state.Config
 	snapshot      monitor.Snapshot
 	data          state.Data
 	logs          []logging.Entry
+	dataRevision  uint64
+	logRevision   uint64
 
 	page                            string
 	query, status, priority, order  string
@@ -72,10 +77,13 @@ type application struct {
 
 func newApplication(store *state.Store, log *logging.Log) *application {
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &application{store: store, log: log, ctx: ctx, cancel: cancel, cfg: store.Config(), data: store.Data(), page: "streamers", status: "All statuses", priority: "All priorities", order: "Last recorded", level: "All levels"}
-	a.logo, _ = ui.DecodeBitmap(assets.Icon)
+	a := &application{store: store, log: log, ctx: ctx, cancel: cancel, cfg: store.Config(), page: "streamers", status: "All statuses", priority: "All priorities", order: "Last recorded", level: "All levels"}
+	a.data, a.dataRevision = store.DataSince(0)
+	a.logo, _ = decodeThumbnail(assets.Icon, logoPixels)
 	a.avatars = make(map[string]*ui.Bitmap)
 	a.avatarLoading = make(map[string]bool)
+	a.avatarUsed = make(map[string]uint64)
+	a.avatarRetry = make(map[string]time.Time)
 	a.loadNumbers()
 	_, err := recording.FindFFmpeg(a.cfg.FFmpegPath)
 	a.ffmpeg = err == nil
@@ -95,11 +103,15 @@ func (a *application) update(fn func()) {
 }
 func (a *application) refresh() {
 	if a.engine != nil {
-		a.snapshot = a.engine.Snapshot()
+		a.snapshot, _ = a.engine.SnapshotIfChanged(a.snapshot)
 	}
-	a.data = a.store.Data()
-	a.logs = a.log.Entries()
-	a.loadAvatars()
+	if data, revision := a.store.DataSince(a.dataRevision); revision != a.dataRevision {
+		a.data, a.dataRevision = data, revision
+	}
+	if entries, revision := a.log.EntriesSince(a.logRevision); revision != a.logRevision {
+		a.logs, a.logRevision = entries, revision
+	}
+	a.pruneAvatars()
 }
 func (a *application) work(fn func() error) {
 	if a.busy {
@@ -225,6 +237,8 @@ func Run(dir string, preview bool) error {
 func (a *application) updates() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	var snapshot monitor.Snapshot
+	dataRevision, logRevision := a.store.DataRevision(), a.log.Revision()
 	maintenance := time.NewTicker(5 * time.Second)
 	defer maintenance.Stop()
 	var events <-chan monitor.Event
@@ -242,7 +256,17 @@ func (a *application) updates() {
 				}
 			}
 		case <-tick.C:
-			a.update(a.refresh)
+			// All comparison state belongs to this goroutine. Window.Update posts
+			// asynchronously; it must not share mutable UI fields with this loop.
+			changed := false
+			if a.engine != nil {
+				snapshot, changed = a.engine.SnapshotIfChanged(snapshot)
+			}
+			nextData, nextLog := a.store.DataRevision(), a.log.Revision()
+			if changed || nextData != dataRevision || nextLog != logRevision {
+				dataRevision, logRevision = nextData, nextLog
+				a.update(a.refresh)
+			}
 		case event := <-events:
 			a.update(func() {
 				a.refresh()

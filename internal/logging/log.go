@@ -30,6 +30,7 @@ type Log struct {
 	size     int64
 	limit    int64
 	sequence uint64
+	revision uint64
 	entries  []Entry
 }
 
@@ -38,7 +39,7 @@ func OpenSize(dir string, limit int64) (*Log, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	l := &Log{path: filepath.Join(dir, "bigo-live-recorder.log"), limit: limit}
+	l := &Log{path: filepath.Join(dir, "bigo-live-recorder.log"), limit: limit, revision: 1}
 	for _, suffix := range []string{".2", ".1", ""} {
 		f, err := os.Open(l.path + suffix)
 		if errors.Is(err, os.ErrNotExist) {
@@ -72,6 +73,7 @@ func OpenSize(dir string, limit int64) (*Log, error) {
 	return l, nil
 }
 func (l *Log) keep(e Entry) {
+	l.revision++
 	if len(l.entries) == MaxEntries {
 		copy(l.entries, l.entries[1:])
 		l.entries[len(l.entries)-1] = e
@@ -129,7 +131,30 @@ func (l *Log) Entries() []Entry {
 	defer l.mu.Unlock()
 	return append([]Entry(nil), l.entries...)
 }
-func (l *Log) ClearView() { l.mu.Lock(); defer l.mu.Unlock(); l.entries = nil }
+
+// Revision changes for new entries and when the displayed tail is cleared.
+func (l *Log) Revision() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.revision
+}
+
+// EntriesSince copies the retained entries only after their revision changes.
+func (l *Log) EntriesSince(revision uint64) ([]Entry, uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if revision == l.revision {
+		return nil, revision
+	}
+	return append([]Entry(nil), l.entries...), l.revision
+}
+
+func (l *Log) ClearView() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = nil
+	l.revision++
+}
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

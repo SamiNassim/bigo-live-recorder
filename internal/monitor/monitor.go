@@ -266,12 +266,22 @@ func (e *Engine) Remove(id string) error {
 	return err
 }
 func (e *Engine) Snapshot() Snapshot {
+	s, _ := e.snapshot(nil)
+	return s
+}
+
+// SnapshotIfChanged reuses an immutable snapshot while all rows and summary
+// fields match. Map iteration order cannot cause a spurious change.
+func (e *Engine) SnapshotIfChanged(previous Snapshot) (Snapshot, bool) {
+	return e.snapshot(&previous)
+}
+
+func (e *Engine) snapshot(previous *Snapshot) (Snapshot, bool) {
 	s := Snapshot{Listener: e.hub.Status()}
 	cfg := e.store.Config()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, it := range e.items {
-		s.Rows = append(s.Rows, it.row)
 		if it.handle != nil && it.row.Status == "Recording" {
 			s.Recording++
 		}
@@ -286,13 +296,32 @@ func (e *Engine) Snapshot() Snapshot {
 		}
 	}
 	if cfg.NativeListening {
-		s.Listener.TotalTargets = len(s.Rows) - s.MonitoringPaused
+		s.Listener.TotalTargets = len(e.items) - s.MonitoringPaused
 		if s.Listener.Connected && s.Listener.ReadyTargets < s.Listener.TotalTargets {
 			s.Listener.State = "partial"
 			s.Listener.Message = fmt.Sprintf("Native connection active; %d/%d subscriptions ready. Some targets are still resolving or need attention.", s.Listener.ReadyTargets, s.Listener.TotalTargets)
 		}
 	}
-	return s
+	if previous != nil && s.Listener == previous.Listener &&
+		s.Recording == previous.Recording && s.QueueTargets == previous.QueueTargets &&
+		s.MonitoringPaused == previous.MonitoringPaused && s.RecordingPaused == previous.RecordingPaused &&
+		len(previous.Rows) == len(e.items) {
+		unchanged := true
+		for _, row := range previous.Rows {
+			if it := e.items[row.Streamer.ID]; it == nil || it.row != row {
+				unchanged = false
+				break
+			}
+		}
+		if unchanged {
+			return *previous, false
+		}
+	}
+	s.Rows = make([]Row, 0, len(e.items))
+	for _, it := range e.items {
+		s.Rows = append(s.Rows, it.row)
+	}
+	return s, true
 }
 func (e *Engine) Close() {
 	e.cancel()

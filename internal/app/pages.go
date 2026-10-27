@@ -52,7 +52,7 @@ func (a *application) streamers(c *ui.Context) {
 				case 0:
 					ui.Row(c).Height(58).Gap(12).AlignItems(ui.Center).Children(func() {
 						initial, _ := utf8.DecodeRuneInString(r.Streamer.DisplayName())
-						if avatar := a.avatars[r.Streamer.Avatar]; avatar != nil {
+						if avatar := a.avatar(c, r.Streamer.Avatar); avatar != nil {
 							ui.Image(c, avatar).Size(34, 34).Radius(17)
 						} else {
 							ui.Box(c).Size(34, 34).Radius(17).Background(t.Accent.Alpha(0.15)).Center().Children(func() { ui.Text(c, strings.ToUpper(string(initial))).FontWeight(600).TextColor(t.Accent) })
@@ -99,6 +99,7 @@ func (a *application) streamers(c *ui.Context) {
 				case 2:
 					label := "—"
 					if !r.StartedAt.IsZero() {
+						c.After(time.Second)
 						label = duration(time.Since(r.StartedAt))
 					}
 					ui.Text(c, label).FontSize(12)
@@ -107,7 +108,11 @@ func (a *application) streamers(c *ui.Context) {
 				case 4:
 					label := "—"
 					if !r.NextCheck.IsZero() && r.Status != "Recording" && !r.Streamer.Paused {
-						label = "In " + duration(time.Until(r.NextCheck))
+						remaining := time.Until(r.NextCheck)
+						if remaining > 0 {
+							c.After(min(time.Second, remaining))
+						}
+						label = "In " + duration(remaining)
 					}
 					ui.Text(c, label).FontSize(11).TextColor(t.TextMuted)
 				case 5:
@@ -262,6 +267,8 @@ func (a *application) recordings(c *ui.Context) {
 				d := time.Since(r.StartedAt)
 				if !r.EndedAt.IsZero() {
 					d = r.EndedAt.Sub(r.StartedAt)
+				} else {
+					c.After(time.Second)
 				}
 				ui.Text(c, duration(d)).FontSize(11)
 			case 3:

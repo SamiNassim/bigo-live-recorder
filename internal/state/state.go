@@ -125,17 +125,18 @@ func DefaultDirectory() (string, error) {
 }
 
 type Store struct {
-	mu     sync.RWMutex
-	dir    string
-	config Config
-	data   Data
+	mu           sync.RWMutex
+	dir          string
+	config       Config
+	data         Data
+	dataRevision uint64
 }
 
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, config: Defaults(), data: Data{Version: 1, Streamers: []Streamer{}, Recordings: []Recording{}}}
+	s := &Store{dir: dir, config: Defaults(), data: Data{Version: 1, Streamers: []Streamer{}, Recordings: []Recording{}}, dataRevision: 1}
 	migrateConfig := false
 	for _, file := range []struct {
 		name  string
@@ -212,6 +213,24 @@ func (s *Store) Data() Data {
 	defer s.mu.RUnlock()
 	return clone(s.data)
 }
+
+// DataRevision changes only when the in-memory data snapshot changes.
+func (s *Store) DataRevision() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dataRevision
+}
+
+// DataSince copies the data only when it differs from the caller's revision.
+// A zero revision requests the initial snapshot, including an empty one.
+func (s *Store) DataSince(revision uint64) (Data, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if revision == s.dataRevision {
+		return Data{}, revision
+	}
+	return clone(s.data), s.dataRevision
+}
 func clone(d Data) Data {
 	d.Streamers = append([]Streamer(nil), d.Streamers...)
 	d.Recordings = append([]Recording(nil), d.Recordings...)
@@ -256,6 +275,7 @@ func (s *Store) Update(fn func(*Data) error) error {
 		return err
 	}
 	s.data = next
+	s.dataRevision++
 	return nil
 }
 
