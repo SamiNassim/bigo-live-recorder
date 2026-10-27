@@ -24,7 +24,8 @@ import (
 )
 
 const Name = "BIGO Live Recorder"
-const Version = "0.1.0"
+
+var Version = "dev"
 
 type application struct {
 	store  *state.Store
@@ -139,6 +140,9 @@ func Run(dir string, preview bool) error {
 		return err
 	}
 	mygo.App.SetName(Name)
+	if packagedVersion := mygo.App.Version(); packagedVersion != "" {
+		Version = packagedVersion
+	}
 	mygo.App.SetVersion(Version)
 	if !mygo.App.RequestSingleInstanceLock() {
 		log.Close()
