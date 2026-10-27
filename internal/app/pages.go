@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/monitor"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
@@ -338,24 +337,15 @@ func (a *application) pollingQueue(c *ui.Context) {
 func (a *application) settings(c *ui.Context) {
 	t := c.Theme()
 	header(c, "Settings", "One BIGO account, native notifications, and your recording workflow.", func() {
-		if ui.PrimaryButton(c, "Save settings").Disabled(a.busy || a.preview || a.ffmpegInstalling).Height(36).Clicked() {
-			cfg := a.cfg
-			cfg.PollSeconds = int(a.normalSeconds)
-			cfg.ColdSeconds = int(a.coldSeconds)
-			cfg.RequestDelaySeconds = int(a.delaySeconds)
-			a.work(func() error {
-				if err := a.engine.SaveConfig(cfg); err != nil {
-					return err
-				}
-				_, ffmpegErr := ffmpeg.Check(a.ctx, cfg.FFmpegPath)
-				a.update(func() {
-					a.cfg = a.store.Config()
-					a.ffmpeg = ffmpegErr == nil
-					a.toasts = append(a.toasts, "Settings saved")
-					mygo.Theme.SetSource(mygo.ThemeSource(cfg.Theme))
-				})
-				return nil
+		if a.unsavedSettings() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).TextColor(t.Warning).Children(func() {
+				ui.Icon(c, warningIcon).Size(16, 16).Label("Unsaved settings warning")
+				ui.Text(c, "Unsaved settings").FontSize(12).FontWeight(500)
 			})
+		}
+		if ui.PrimaryButton(c, "Save settings").Disabled(a.busy || a.preview || a.ffmpegInstalling).Height(36).Clicked() {
+			cfg := a.settingsConfig()
+			a.work(func() error { return a.saveSettings(cfg) })
 		}
 	})
 	if a.accountSettingsRequested {
