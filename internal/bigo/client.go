@@ -28,6 +28,7 @@ type Account struct {
 	Avatar string `json:"data5"`
 }
 type Stream struct {
+	native    *pJoinChannelRes
 	Alive     int      `json:"alive"`
 	UID       uint32   `json:"uid"`
 	Name      string   `json:"nick_name"`
@@ -36,6 +37,7 @@ type Stream struct {
 	HLS       string   `json:"hls_src"`
 	CDN       []string `json:"cdn_src"`
 	NeedLogin bool     `json:"needLogin"`
+	Quality   string   `json:"quality,omitempty"`
 }
 
 // BIGO uses both JSON strings and numbers for provider identifiers.
@@ -78,6 +80,9 @@ func (s Stream) URL() string {
 	}
 	return ""
 }
+
+// Playable includes native media tickets, which need no web playback URL.
+func (s Stream) Playable() bool { return s.native != nil || s.URL() != "" }
 
 // URLs returns the preferred playback URL followed by distinct CDN alternatives.
 func (s Stream) URLs() []string {

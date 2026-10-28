@@ -58,6 +58,9 @@ func OpenStream(ctx context.Context, client *http.Client, playlistURL, referer s
 // refreshes happen only after a stall/error/end marker, never during healthy
 // recording. Account authentication stays in Refresh, isolated from media HTTP.
 func OpenRecoveringStream(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (io.ReadCloser, error) {
+	if source.native != nil {
+		return openNativeRecoveringStream(ctx, client, source, referer, recovery)
+	}
 	return openHLSStream(ctx, client, source, referer, recovery, defaultHLSPolicy(), true)
 }
 
