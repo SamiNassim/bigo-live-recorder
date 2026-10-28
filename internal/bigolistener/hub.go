@@ -101,6 +101,9 @@ type Hub struct {
 	dial             hubDialFunc
 	status           RuntimeStatus
 
+	activeClientMu sync.Mutex
+	activeClient   *linkdClient
+
 	info    func(string)
 	warning func(string)
 	wg      sync.WaitGroup
@@ -152,6 +155,51 @@ func (h *Hub) Status() RuntimeStatus {
 	defer h.mu.Unlock()
 	return h.status
 }
+
+// Query sends a raw Linkd frame on the shared authenticated connection and
+// waits for the matching response URI. It reuses the listener's existing
+// connection instead of opening a second one (BIGO allows only one active
+// Linkd session per account). Returns ErrNoConnection when no Linkd session
+// is currently established.
+func (h *Hub) Query(ctx context.Context, requestURI, responseURI int32, body []byte) (linkdFrame, error) {
+	return h.QueryMatch(ctx, requestURI, responseURI, body, nil)
+}
+
+// QueryMatch multiplexes a request onto the listener's connection. Match checks
+// the response's request sequence, and its target identity where available;
+// it runs on the sole reader and must not block or call back into the hub.
+// Canceled queries never consume a later request's correctly matched response.
+func (h *Hub) QueryMatch(ctx context.Context, requestURI, responseURI int32, body []byte, match func([]byte) bool) (linkdFrame, error) {
+	return h.QueryAccount(ctx, requestURI, responseURI, func(uint32) ([]byte, func([]byte) bool, error) {
+		return body, match, nil
+	})
+}
+
+// QueryAccount builds a request using the same authenticated account that will
+// send it. An account change cannot mix another session's UID into the request.
+// Its matcher runs on the sole reader and must not block or call into the hub.
+func (h *Hub) QueryAccount(ctx context.Context, requestURI, responseURI int32, build func(uint32) ([]byte, func([]byte) bool, error)) (linkdFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return linkdFrame{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, linkdIOTimeout)
+	defer cancel()
+	h.activeClientMu.Lock()
+	client := h.activeClient
+	h.activeClientMu.Unlock()
+	if client == nil {
+		return linkdFrame{}, ErrNoConnection
+	}
+	body, match, err := build(client.session.UID)
+	if err != nil {
+		return linkdFrame{}, err
+	}
+	return client.query(ctx, requestURI, responseURI, body, match)
+}
+
+// ErrNoConnection is returned when a query is attempted before the Linkd
+// session is established.
+var ErrNoConnection = errors.New("BIGO Linkd connection is not established")
 
 // Configure applies the current preference and cookie identity. It returns
 // true when native listening is selected, even if the cookie is not currently
@@ -452,6 +500,19 @@ func (h *Hub) connectAndListen(
 	cancelDial()
 	if err != nil {
 		return err
+	}
+	connClient, ok := client.(*linkdClient)
+	if ok {
+		h.activeClientMu.Lock()
+		h.activeClient = connClient
+		h.activeClientMu.Unlock()
+		defer func() {
+			h.activeClientMu.Lock()
+			if h.activeClient == connClient {
+				h.activeClient = nil
+			}
+			h.activeClientMu.Unlock()
+		}()
 	}
 	defer client.Close()
 	stopClose := context.AfterFunc(ctx, func() { _ = client.Close() })

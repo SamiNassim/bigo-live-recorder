@@ -77,10 +77,27 @@ type linkdClient struct {
 	recvCipher    *rc4.Cipher
 	recvPlain     []byte
 	pendingEvents []liveEvent
-	writeMu       sync.Mutex
+	writeOnce     sync.Once
+	writeGate     chan struct{}
 	seq           uint32
 	lastReceived  time.Time
 	session       Session
+
+	queryMu sync.Mutex
+	queries map[int32][]*pendingQuery
+	closed  bool
+	done    chan struct{}
+}
+
+type queryResult struct {
+	frame linkdFrame
+	err   error
+}
+
+type pendingQuery struct {
+	uri    int32
+	match  func([]byte) bool
+	result chan queryResult
 }
 
 type wireWriter struct{ bytes.Buffer }
@@ -445,7 +462,26 @@ func dialOneLinkd(ctx context.Context, address string, session Session) (*linkdC
 }
 
 func (c *linkdClient) Close() error {
-	if c == nil || c.conn == nil {
+	if c == nil {
+		return nil
+	}
+	c.queryMu.Lock()
+	if c.closed {
+		c.queryMu.Unlock()
+		return nil
+	}
+	c.closed = true
+	if c.done != nil {
+		close(c.done)
+	}
+	for _, requests := range c.queries {
+		for _, request := range requests {
+			request.result <- queryResult{err: ErrNoConnection}
+		}
+	}
+	clear(c.queries)
+	c.queryMu.Unlock()
+	if c.conn == nil {
 		return nil
 	}
 	return c.conn.Close()
@@ -460,17 +496,162 @@ func (c *linkdClient) nextSequence() uint32 {
 }
 
 func (c *linkdClient) sendFrame(uri int32, body []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	return c.sendFrameContext(context.Background(), uri, body)
+}
+
+func (c *linkdClient) sendFrameContext(ctx context.Context, uri int32, body []byte) error {
+	c.queryMu.Lock()
+	if c.closed {
+		c.queryMu.Unlock()
+		return ErrNoConnection
+	}
+	if c.done == nil {
+		c.done = make(chan struct{})
+	}
+	done := c.done
+	c.queryMu.Unlock()
+	c.writeOnce.Do(func() { c.writeGate = make(chan struct{}, 1) })
+	select {
+	case c.writeGate <- struct{}{}:
+		defer func() { <-c.writeGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return ErrNoConnection
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.queryMu.Lock()
+	closed := c.closed
+	c.queryMu.Unlock()
+	if closed {
+		return ErrNoConnection
+	}
 	plain := marshalFrame(uri, body)
 	encrypted := make([]byte, len(plain))
 	c.sendCipher.XORKeyStream(encrypted, plain)
-	_ = c.conn.SetWriteDeadline(time.Now().Add(linkdIOTimeout))
+	deadline := time.Now().Add(linkdIOTimeout)
+	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+		deadline = limit
+	}
+	_ = c.conn.SetWriteDeadline(deadline)
+	cancelFinished := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = c.conn.SetWriteDeadline(time.Now())
+		close(cancelFinished)
+	})
+	defer func() {
+		if !stopCancel() {
+			<-cancelFinished
+		}
+		_ = c.conn.SetWriteDeadline(time.Time{})
+	}()
 	if err := writeAll(c.conn, encrypted); err != nil {
+		// Advancing the stream cipher without writing every encrypted byte
+		// makes this connection unusable, even if cancellation caused the write.
+		_ = c.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if limit, ok := ctx.Deadline(); ok && !time.Now().Before(limit) {
+			return context.DeadlineExceeded
+		}
 		return fmt.Errorf("send BIGO Linkd uri=%d: %w", uri, err)
 	}
-	_ = c.conn.SetWriteDeadline(time.Time{})
 	return nil
+}
+
+// query never reads from the connection. The hub remains its sole reader and
+// routes matched replies before either setup or passive event handling sees them.
+func (c *linkdClient) query(ctx context.Context, requestURI, responseURI int32, body []byte, match func([]byte) bool) (linkdFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return linkdFrame{}, err
+	}
+	request := &pendingQuery{uri: responseURI, match: match, result: make(chan queryResult, 1)}
+	c.queryMu.Lock()
+	if c.closed {
+		c.queryMu.Unlock()
+		return linkdFrame{}, ErrNoConnection
+	}
+	for _, pending := range c.queries[responseURI] {
+		if match == nil || pending.match == nil {
+			c.queryMu.Unlock()
+			return linkdFrame{}, errors.New("BIGO query response requires sequence correlation")
+		}
+	}
+	count := 0
+	for _, pending := range c.queries {
+		count += len(pending)
+	}
+	if count >= 64 {
+		c.queryMu.Unlock()
+		return linkdFrame{}, errors.New("too many pending BIGO queries")
+	}
+	if c.queries == nil {
+		c.queries = make(map[int32][]*pendingQuery)
+	}
+	c.queries[responseURI] = append(c.queries[responseURI], request)
+	c.queryMu.Unlock()
+	sent := false
+	defer func() {
+		// An uncorrelated canceled reply must be discarded before another
+		// request for that URI can safely run on the same connection.
+		if !sent || match != nil || ctx.Err() == nil {
+			c.removeQuery(request)
+		}
+	}()
+	if err := c.sendFrameContext(ctx, requestURI, body); err != nil {
+		return linkdFrame{}, err
+	}
+	sent = true
+	select {
+	case result := <-request.result:
+		return result.frame, result.err
+	case <-ctx.Done():
+		return linkdFrame{}, ctx.Err()
+	}
+}
+
+func (c *linkdClient) removeQuery(request *pendingQuery) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	requests := c.queries[request.uri]
+	for i, pending := range requests {
+		if pending == request {
+			copy(requests[i:], requests[i+1:])
+			requests[len(requests)-1] = nil
+			requests = requests[:len(requests)-1]
+			if len(requests) == 0 {
+				delete(c.queries, request.uri)
+			} else {
+				c.queries[request.uri] = requests
+			}
+			return
+		}
+	}
+}
+
+func (c *linkdClient) routeQuery(frame linkdFrame) bool {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	requests := c.queries[frame.URI]
+	for i, request := range requests {
+		if request.match != nil && !request.match(frame.Body) {
+			continue
+		}
+		copy(requests[i:], requests[i+1:])
+		requests[len(requests)-1] = nil
+		requests = requests[:len(requests)-1]
+		if len(requests) == 0 {
+			delete(c.queries, frame.URI)
+		} else {
+			c.queries[frame.URI] = requests
+		}
+		request.result <- queryResult{frame: frame}
+		return true
+	}
+	return false
 }
 
 func (c *linkdClient) readFrame(ctx context.Context) (linkdFrame, error) {
@@ -486,6 +667,9 @@ func (c *linkdClient) readFrame(ctx context.Context) (linkdFrame, error) {
 				frame, err := parseFrame(raw)
 				if err == nil {
 					c.lastReceived = time.Now()
+					if c.routeQuery(frame) {
+						continue
+					}
 				}
 				return frame, err
 			}
