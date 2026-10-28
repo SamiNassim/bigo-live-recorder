@@ -140,3 +140,16 @@ func TestWindowStateDoesNotOverwritePreferences(t *testing.T) {
 		t.Fatalf("lost window or preference: %+v", r.Config())
 	}
 }
+
+func TestValidStreamQuality(t *testing.T) {
+	for _, q := range StreamQualities {
+		if !ValidStreamQuality(q) {
+			t.Fatalf("valid quality %q rejected", q)
+		}
+	}
+	for _, bad := range []string{"", "uhd", "8k", "Origin", "AUTO"} {
+		if ValidStreamQuality(bad) {
+			t.Fatalf("invalid quality %q accepted", bad)
+		}
+	}
+}

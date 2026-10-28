@@ -31,6 +31,14 @@ type Config struct {
 	PostProcess         bool   `json:"post_process"`
 	FFmpegArgs          string `json:"ffmpeg_args"`
 	OutputExtension     string `json:"output_extension"`
+	StreamQuality       string `json:"stream_quality,omitempty"`
+}
+
+// Origin uses native media; auto keeps the web player's automatic rendition.
+var StreamQualities = []string{"origin", "auto"}
+
+func ValidStreamQuality(quality string) bool {
+	return quality == "origin" || quality == "auto"
 }
 
 type Window struct {
@@ -51,6 +59,7 @@ type Streamer struct {
 	Paused          bool      `json:"paused"`
 	RecordingPaused bool      `json:"recording_paused,omitempty"`
 	LowPriority     bool      `json:"low_priority"`
+	Quality         string    `json:"quality,omitempty"`
 	AddedAt         time.Time `json:"added_at"`
 	LastRecordedAt  time.Time `json:"last_recorded_at,omitempty"`
 }
@@ -88,7 +97,7 @@ func Defaults() Config {
 	return Config{Theme: "system", RecordingPath: filepath.Join(home, "Movies", "BIGO Live Recorder"), NativeListening: true,
 		NativeDeviceID: "web_" + rand.Text(),
 		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true,
-		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv"}
+		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv", StreamQuality: "origin"}
 }
 
 func (c Config) Validate() error {
@@ -112,6 +121,9 @@ func (c Config) Validate() error {
 	}
 	if c.OutputExtension != "mkv" && c.OutputExtension != "mp4" && c.OutputExtension != "ts" {
 		return errors.New("choose MKV, MP4, or TS for the optional processed copy")
+	}
+	if c.StreamQuality != "" && !ValidStreamQuality(c.StreamQuality) {
+		return errors.New("choose Origin or Web for stream quality")
 	}
 	return nil
 }

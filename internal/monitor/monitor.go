@@ -42,6 +42,11 @@ type streamClient interface {
 	Presence(context.Context, string) (bigo.Stream, error)
 	Messaging(context.Context, string) (bigo.MessagingCredentials, error)
 }
+
+type nativeStreamClient interface {
+	OriginStream(context.Context, bigo.Stream, *bigolistener.Hub) (bigo.Stream, error)
+}
+
 type activeRecording interface {
 	File() string
 	Started() time.Time
@@ -83,13 +88,7 @@ type Engine struct {
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {
-	client := bigo.NewClient()
-	return newEngine(store, log, client, func(ctx context.Context, s state.Streamer, source bigo.Stream, c state.Config) (activeRecording, error) {
-		return recording.Start(ctx, s, source, c, bigo.StreamRecovery{
-			Refresh: func(ctx context.Context) (bigo.Stream, error) { return client.Check(ctx, s.ID) },
-			Report:  func(level, message string) { log.Write(level, s.ID, message) },
-		})
-	})
+	return newEngine(store, log, bigo.NewClient(), nil)
 }
 
 func newEngine(store *state.Store, log *logging.Log, client streamClient, start startRecording) *Engine {
@@ -98,10 +97,74 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	e.recoverHistory()
 	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) })
 	e.configure(store.Config())
+	if e.start == nil {
+		e.start = e.startRecording
+	}
 	e.wg.Add(1)
 	go e.run()
 	return e
 }
+
+func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (activeRecording, error) {
+	stream, err := e.playbackSource(ctx, streamer, source, cfg, nil)
+	if err != nil {
+		return nil, err
+	}
+	return recording.Start(ctx, streamer, stream, cfg, bigo.StreamRecovery{
+		// Recovery is called only after a media error or stall, never while
+		// recording advances normally. Always resolve the current room anew.
+		Refresh: func(ctx context.Context) (bigo.Stream, error) {
+			return e.refreshPlayback(ctx, streamer, cfg)
+		},
+		Report: func(level, message string) { e.log.Write(level, streamer.ID, message) },
+	})
+}
+
+func (e *Engine) refreshPlayback(ctx context.Context, streamer state.Streamer, cfg state.Config) (bigo.Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return bigo.Stream{}, err
+	}
+	source, err := e.client.Check(ctx, streamer.ID)
+	return e.playbackSource(ctx, streamer, source, cfg, err)
+}
+
+func (e *Engine) playbackSource(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config, webErr error) (bigo.Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return bigo.Stream{}, err
+	}
+	native, supported := e.client.(nativeStreamClient)
+	if !e.wantsNative(streamer, cfg) || !supported || source.Alive != 1 {
+		return source, webErr
+	}
+	if source.UID == 0 {
+		source.UID = streamer.UID
+	}
+	stream, err := native.OriginStream(ctx, source, e.hub)
+	if canceled := ctx.Err(); canceled != nil {
+		return bigo.Stream{}, canceled
+	}
+	if err == nil && !stream.Playable() {
+		err = bigo.ErrOriginUnavailable
+	}
+	if err == nil {
+		return stream, nil
+	}
+	if webErr != nil || source.URL() == "" {
+		return source, errors.Join(webErr, err)
+	}
+	e.log.Write("WARN", streamer.ID, "Native media source unavailable; using the web stream: "+err.Error())
+	return source, nil
+}
+
+func (e *Engine) wantsNative(streamer state.Streamer, cfg state.Config) bool {
+	quality := streamer.Quality
+	if quality == "" {
+		quality = cfg.StreamQuality
+	}
+	_, supported := e.client.(nativeStreamClient)
+	return cfg.NativeListening && (quality == "" || quality == "origin") && supported
+}
+
 func (e *Engine) Events() <-chan Event { return e.events }
 func (e *Engine) wakeUp() {
 	select {
@@ -277,7 +340,11 @@ func (e *Engine) SnapshotIfChanged(previous Snapshot) (Snapshot, bool) {
 }
 
 func (e *Engine) snapshot(previous *Snapshot) (Snapshot, bool) {
-	s := Snapshot{Listener: e.hub.Status()}
+	var listener bigolistener.RuntimeStatus
+	if e.hub != nil {
+		listener = e.hub.Status()
+	}
+	s := Snapshot{Listener: listener}
 	cfg := e.store.Config()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -325,7 +392,9 @@ func (e *Engine) snapshot(previous *Snapshot) (Snapshot, bool) {
 }
 func (e *Engine) Close() {
 	e.cancel()
-	e.hub.Close()
+	if e.hub != nil {
+		e.hub.Close()
+	}
 	e.wg.Wait()
 }
 
@@ -417,17 +486,8 @@ func (e *Engine) reconcile() {
 			it.unsubscribe = nil
 			it.subUID = 0
 		}
-		if cfg.NativeListening && s.UID != 0 && it.subUID != s.UID {
-			if it.unsubscribe != nil {
-				it.unsubscribe()
-			}
-			ch, off, err := e.hub.Subscribe(s.ID, s.UID)
-			if err == nil {
-				watchCtx, stop := context.WithCancel(e.ctx)
-				it.unsubscribe = func() { off(); stop() }
-				it.subUID = s.UID
-				go e.listen(watchCtx, s.ID, ch)
-			}
+		if cfg.NativeListening {
+			e.subscribeLocked(it)
 		}
 		if it.row.Status == "Monitoring paused" {
 			it.row.Status = "Waiting"
@@ -464,6 +524,28 @@ func (e *Engine) reconcile() {
 			delete(e.items, id)
 		}
 	}
+}
+
+// subscribeLocked is shared by restored monitors and newly resolved accounts.
+// Registering the first target before source selection lets the one shared
+// connection authenticate while a native media lookup waits for it.
+func (e *Engine) subscribeLocked(it *item) {
+	s := it.row.Streamer
+	if e.hub == nil || s.UID == 0 || s.Paused || it.subUID == s.UID {
+		return
+	}
+	if it.unsubscribe != nil {
+		it.unsubscribe()
+		it.unsubscribe, it.subUID = nil, 0
+	}
+	ch, off, err := e.hub.Subscribe(s.ID, s.UID)
+	if err != nil {
+		return
+	}
+	watchCtx, stop := context.WithCancel(e.ctx)
+	it.unsubscribe = func() { off(); stop() }
+	it.subUID = s.UID
+	go e.listen(watchCtx, s.ID, ch)
 }
 
 func (e *Engine) next() string {
@@ -603,6 +685,14 @@ func (e *Engine) check(id string) {
 	}
 	if err == nil && cfg.NativeListening && it.row.Streamer.UID == 0 {
 		err = fmt.Errorf("BIGO did not resolve a native UID for %s", id)
+	}
+	if cfg.NativeListening {
+		e.subscribeLocked(it)
+	}
+	// A withheld web URL does not prevent native playback. Keep all other API
+	// failures on their existing retry path, including missing authentication.
+	if errors.Is(err, bigo.ErrURLWithheld) && stream.Alive == 1 && !it.row.Streamer.RecordingPaused && e.wantsNative(it.row.Streamer, cfg) {
+		err = nil
 	}
 	if err == nil || stream.Alive == 1 {
 		it.row.Live = stream.Alive == 1

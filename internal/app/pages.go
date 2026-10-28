@@ -424,6 +424,20 @@ func (a *application) settings(c *ui.Context) {
 				}
 			})
 			toggle(c, "Separate folder for each streamer", "Folder names start with the BIGO ID, followed by the display name.", &a.cfg.FolderPerStreamer)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "Stream quality").Grow(1)
+				quality := "Origin (native)"
+				if a.cfg.StreamQuality == "auto" {
+					quality = "Web (automatic)"
+				}
+				if ui.Select(c, &quality, []string{"Origin (native)", "Web (automatic)"}).Width(170).Label("Stream quality").Disabled(!a.cfg.NativeListening).Changed() {
+					a.cfg.StreamQuality = "origin"
+					if quality == "Web (automatic)" {
+						a.cfg.StreamQuality = "auto"
+					}
+				}
+			})
+			ui.Text(c, "Origin uses native live notifications and falls back to the web stream if native media cannot start. With native notifications disabled, recordings use the web stream.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
 			toggle(c, "Create a processed copy with FFmpeg", "Runs after the recording ends. The original MKV is always kept, even if processing fails.", &a.cfg.PostProcess)
 			ui.Column(c).FillWidth().Gap(10).Disabled(!a.cfg.PostProcess).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
