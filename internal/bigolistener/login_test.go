@@ -11,6 +11,13 @@ import (
 )
 
 func TestLoginUsesWebTicketAndVerifiedNativeIdentity(t *testing.T) {
+	for _, username := range []string{"viewer-account", "0"} {
+		t.Run(username, func(t *testing.T) { testWebTicketLogin(t, username) })
+	}
+}
+
+func testWebTicketLogin(t *testing.T, username string) {
+	t.Helper()
 	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -23,6 +30,7 @@ func TestLoginUsesWebTicketAndVerifiedNativeIdentity(t *testing.T) {
 		return c
 	}
 	session := validTestSession()
+	session.Username = username
 	client := &linkdClient{conn: clientConn, sendCipher: newCipher(), recvCipher: newCipher(), session: session}
 	server := &linkdClient{conn: serverConn, sendCipher: newCipher(), recvCipher: newCipher()}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

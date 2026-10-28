@@ -18,15 +18,19 @@ func testSessionSource(context.Context, string) (Session, error) {
 
 func TestSessionValidation(t *testing.T) {
 	t.Parallel()
-	if err := validTestSession().Validate(); err != nil {
-		t.Fatal(err)
+	for _, username := range []string{"viewer-account", "0"} {
+		session := validTestSession()
+		session.Username = username
+		if err := session.Validate(); err != nil {
+			t.Fatalf("valid username %q: %v", username, err)
+		}
 	}
 	for _, test := range []struct {
 		name string
 		edit func(*Session)
 	}{
 		{"uid", func(s *Session) { s.UID = 0 }},
-		{"guest", func(s *Session) { s.Username = "0" }},
+		{"username", func(s *Session) { s.Username = "" }},
 		{"cookie", func(s *Session) { s.Cookie = nil }},
 		{"device", func(s *Session) { s.DeviceID = "" }},
 		{"oversized", func(s *Session) { s.Username = strings.Repeat("x", 65536) }},

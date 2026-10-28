@@ -38,7 +38,7 @@ func LinkdAddresses(advertised []string) []string {
 }
 
 func (s Session) Validate() error {
-	if s.UID == 0 || strings.TrimSpace(s.Username) == "" || s.Username == "0" {
+	if s.UID == 0 || strings.TrimSpace(s.Username) == "" {
 		return errors.New("BIGO did not issue a real-account messaging identity; replace the web cookie")
 	}
 	if len(s.Cookie) == 0 || len(s.Cookie) > 65535 {

@@ -44,7 +44,9 @@ func (c *Client) Messaging(ctx context.Context, deviceID string) (MessagingCrede
 		return MessagingCredentials{}, err
 	}
 	user := response.Data.RealUser
-	if response.Code != 0 || user == nil || user.Username == "" || user.Username == "0" {
+	// Only realUser contains an authenticated account ticket. BIGO can return
+	// "0" as that account's protocol username; it is not a guest marker.
+	if response.Code != 0 || user == nil || strings.TrimSpace(user.Username) == "" {
 		return MessagingCredentials{}, ErrLoginRequired
 	}
 	var uidText string
