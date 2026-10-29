@@ -49,7 +49,7 @@ func splitNativeTestVideo(part nativeVideoPart) (nativeVideoPart, nativeVideoPar
 	return first, last
 }
 
-func TestNativeAssemblyPreservesDecodeOrderAndHandlesLateWholeFrames(t *testing.T) {
+func TestNativeAssemblyPreservesDecodeOrder(t *testing.T) {
 	var assembly nativeVideoAssembler
 	first, last := splitNativeTestVideo(nativeTestVideo(42, true))
 	next, later := nativeTestVideo(43, false), nativeTestVideo(44, false)
@@ -57,7 +57,8 @@ func TestNativeAssemblyPreservesDecodeOrderAndHandlesLateWholeFrames(t *testing.
 	// rather than presentation timestamps or fragment completion, order output.
 	binary.LittleEndian.PutUint32(next.data, 1800)
 	binary.LittleEndian.PutUint32(later.data, 1760)
-	for _, p := range []nativeVideoPart{first, later} {
+	nextHead, nextTail := splitNativeTestVideo(next)
+	for _, p := range []nativeVideoPart{first, nextHead, later} {
 		if frames, err := assembly.add(p); err != nil || len(frames) != 0 {
 			t.Fatal("dependent frame escaped the reassembly buffer", frames, err)
 		}
@@ -66,16 +67,28 @@ func TestNativeAssemblyPreservesDecodeOrderAndHandlesLateWholeFrames(t *testing.
 	if err != nil || len(frames) != 1 || !frames[0].key {
 		t.Fatal("ready keyframe was not released", frames, err)
 	}
-	// No fragment of frame 43 had arrived. Frame 44 must still wait for it.
-	frames, err = assembly.add(next)
+	frames, err = assembly.add(nextTail)
 	if err != nil || len(frames) != 2 || frames[0].pts != 1800 || frames[1].pts != 1760 {
-		t.Fatal("late frame or B-frame decode order was lost", frames, err)
+		t.Fatal("late fragments or B-frame decode order were lost", frames, err)
 	}
 	if !bytes.Equal(frames[0].data, next.data[9:]) || !bytes.Equal(frames[1].data, later.data[9:]) {
 		t.Fatal("late frames changed payloads")
 	}
 	if len(assembly.frames) != 0 || assembly.bytes != 0 {
 		t.Fatal("draining retained buffered frames")
+	}
+}
+
+func TestNativeAssemblyAllowsProviderSequenceGaps(t *testing.T) {
+	var assembly nativeVideoAssembler
+	for _, p := range []nativeVideoPart{nativeTestVideo(42, true), nativeTestVideo(900, false), nativeTestVideo(904, false), nativeTestVideo(1800, true)} {
+		frames, err := assembly.add(p)
+		if err != nil || len(frames) != 1 || frames[0].pts != p.frame*40 {
+			t.Fatal("provider sequence gap blocked complete video", frames, err)
+		}
+	}
+	if len(assembly.frames) != 0 || assembly.bytes != 0 {
+		t.Fatal("sequence gaps retained video")
 	}
 }
 
@@ -153,6 +166,9 @@ func TestNativeAssemblySequenceWrap(t *testing.T) {
 func TestNativeAssemblyBoundsPendingFramesAndBytes(t *testing.T) {
 	t.Run("frame window", func(t *testing.T) {
 		var assembly nativeVideoAssembler
+		if _, err := assembly.add(nativeTestVideo(40, true)); err != nil {
+			t.Fatal(err)
+		}
 		first, _ := splitNativeTestVideo(nativeTestVideo(42, true))
 		if _, err := assembly.add(first); err != nil {
 			t.Fatal(err)
@@ -171,6 +187,9 @@ func TestNativeAssemblyBoundsPendingFramesAndBytes(t *testing.T) {
 	})
 	t.Run("bytes including complete frames", func(t *testing.T) {
 		var assembly nativeVideoAssembler
+		if _, err := assembly.add(nativeTestVideo(40, true)); err != nil {
+			t.Fatal(err)
+		}
 		first, _ := splitNativeTestVideo(nativeTestVideo(42, true))
 		if _, err := assembly.add(first); err != nil {
 			t.Fatal(err)
@@ -187,6 +206,46 @@ func TestNativeAssemblyBoundsPendingFramesAndBytes(t *testing.T) {
 			t.Fatal("byte limit was exceeded", assembly.bytes)
 		}
 	})
+}
+
+func TestNativeAssemblyStartsAfterJoiningPartialKeyframe(t *testing.T) {
+	for _, pending := range []uint32{4, maxNativePendingFrames + 8} {
+		var assembly nativeVideoAssembler
+		_, tail := splitNativeTestVideo(nativeTestVideo(42, true))
+		parts := []nativeVideoPart{tail}
+		for i := uint32(1); i <= pending; i++ {
+			parts = append(parts, nativeTestVideo(42+i, false))
+		}
+		for _, part := range parts {
+			if frames, err := assembly.add(part); err != nil || len(frames) != 0 {
+				t.Fatal("partial startup keyframe caused an error or undecodable output", frames, err)
+			}
+		}
+		frames, err := assembly.add(nativeTestVideo(43+pending, true))
+		if err != nil || len(frames) != 1 || !frames[0].key {
+			t.Fatal("partial startup frame blocked a complete keyframe", frames, err)
+		}
+		if len(assembly.frames) != 0 || assembly.bytes != 0 {
+			t.Fatal("startup retained an undecodable GOP")
+		}
+	}
+}
+
+func TestNativeAssemblyProtectsActiveKeyframeFromLaterKeyframe(t *testing.T) {
+	var assembly nativeVideoAssembler
+	if _, err := assembly.add(nativeTestVideo(40, true)); err != nil {
+		t.Fatal(err)
+	}
+	first, last := splitNativeTestVideo(nativeTestVideo(42, true))
+	for _, part := range []nativeVideoPart{first, nativeTestVideo(43, false), nativeTestVideo(44, true)} {
+		if frames, err := assembly.add(part); err != nil || len(frames) != 0 {
+			t.Fatal("active keyframe was overtaken", frames, err)
+		}
+	}
+	frames, err := assembly.add(last)
+	if err != nil || len(frames) != 3 || !frames[0].key || frames[0].pts != 42*40 || !frames[2].key {
+		t.Fatal("active keyframe was discarded as startup data", frames, err)
+	}
 }
 
 func TestNativeAssemblyRejectsConflictingFinalIndices(t *testing.T) {
