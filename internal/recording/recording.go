@@ -71,7 +71,7 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		cancel()
 		return nil, err
 	}
-	cmd := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostats", "-n", "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
+	cmd := exec.Command(ffmpeg, recordingArgs(stream, path)...)
 	configureCommand(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -129,6 +129,16 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		h.result = Result{Path: path, Bytes: size, EndedAt: time.Now(), Err: err}
 	}()
 	return h, nil
+}
+
+func recordingArgs(stream io.ReadCloser, path string) []string {
+	args := []string{"-hide_banner", "-loglevel", "warning", "-nostats", "-n"}
+	if clock, ok := stream.(interface{ NativeTimestamps() bool }); ok && clock.NativeTimestamps() {
+		// Native recovery already normalizes both tracks onto one clock. The
+		// MPEG-TS discontinuity fixer can otherwise shift them independently.
+		args = append(args, "-copyts", "-start_at_zero")
+	}
+	return append(args, "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
 }
 
 func recordingPath(s state.Streamer, cfg state.Config, stamp time.Time, suffix string) string {
