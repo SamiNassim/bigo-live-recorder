@@ -124,8 +124,45 @@ func (e *Engine) refreshPlayback(ctx context.Context, streamer state.Streamer, c
 	if err := ctx.Err(); err != nil {
 		return bigo.Stream{}, err
 	}
-	source, err := e.client.Check(ctx, streamer.ID)
+	source, err := e.playbackInfo(ctx, streamer, cfg)
 	return e.playbackSource(ctx, streamer, source, cfg, err)
+}
+
+// Web playback can report an app-only broadcast offline. Resolve its native
+// room from presence only when Origin is selected and web room data is absent.
+// Transport and authentication failures keep their existing retry behavior.
+func (e *Engine) playbackInfo(ctx context.Context, streamer state.Streamer, cfg state.Config) (bigo.Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return bigo.Stream{}, err
+	}
+	source, err := e.client.Check(ctx, streamer.ID)
+	if !e.wantsNative(streamer, cfg) || (err != nil && !errors.Is(err, bigo.ErrURLWithheld)) ||
+		(source.Alive == 1 && source.RoomID != "" && source.RoomID != "0") {
+		return source, err
+	}
+	presence, presenceErr := e.client.Presence(ctx, streamer.ID)
+	if presenceErr != nil {
+		return source, errors.Join(err, presenceErr)
+	}
+	if source.UID != 0 && presence.UID != 0 && source.UID != presence.UID {
+		return source, errors.New("BIGO returned conflicting streamer identities")
+	}
+	if source.UID == 0 {
+		source.UID = presence.UID
+	}
+	if source.Name == "" {
+		source.Name = presence.Name
+	}
+	if source.Avatar == "" {
+		source.Avatar = presence.Avatar
+	}
+	if presence.Alive == 1 {
+		source.Alive = 1
+		if presence.RoomID != "" && presence.RoomID != "0" {
+			source.RoomID = presence.RoomID
+		}
+	}
+	return source, err
 }
 
 func (e *Engine) playbackSource(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config, webErr error) (bigo.Stream, error) {
@@ -628,13 +665,14 @@ func (e *Engine) check(id string) {
 	needsUID := it.row.Streamer.UID == 0
 	bootstrap := !it.initial
 	presenceOnly := it.row.Streamer.RecordingPaused
+	target := it.row.Streamer
 	e.mu.Unlock()
 	var stream bigo.Stream
 	var err error
 	if presenceOnly {
 		stream, err = e.client.Presence(e.ctx, id)
 	} else {
-		stream, err = e.client.Check(e.ctx, id)
+		stream, err = e.playbackInfo(e.ctx, target, e.store.Config())
 	}
 	if !presenceOnly && stream.UID == 0 && needsUID && e.store.Config().NativeListening {
 		if presence, presenceErr := e.client.Presence(e.ctx, id); presenceErr == nil {

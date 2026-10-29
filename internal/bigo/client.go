@@ -45,8 +45,11 @@ func (s *Stream) UnmarshalJSON(b []byte) error {
 	type plain Stream
 	var fields struct {
 		*plain
-		UID    json.RawMessage `json:"uid"`
-		RoomID json.RawMessage `json:"roomId"`
+		UID      json.RawMessage `json:"uid"`
+		RoomID   json.RawMessage `json:"roomId"`
+		Nickname string          `json:"nickname"`
+		Image    string          `json:"ogImage"`
+		AppURL   string          `json:"aliOSUrl"`
 	}
 	fields.plain = (*plain)(s)
 	if err := json.Unmarshal(b, &fields); err != nil {
@@ -70,7 +73,37 @@ func (s *Stream) UnmarshalJSON(b []byte) error {
 		s.UID = uint32(n)
 	}
 	s.RoomID = text(fields.RoomID)
+	if s.Name == "" {
+		s.Name = fields.Nickname
+	}
+	if s.Avatar == "" {
+		s.Avatar = fields.Image
+	}
+	if s.Alive == 1 && (s.RoomID == "" || s.RoomID == "0") {
+		if room := roomFromAppLink(fields.AppURL, s.UID); room != "" {
+			s.RoomID = room
+		}
+	}
 	return nil
+}
+
+// Presence includes the native room in an app link even when web playback is
+// unavailable. Accept it only when its target matches the response's account.
+func roomFromAppLink(address string, uid uint32) string {
+	u, err := url.Parse(address)
+	if err != nil || uid == 0 || u.Scheme != "bigolive" || u.Host != "livevideoshow" || u.User != nil {
+		return ""
+	}
+	query := u.Query()
+	target, err := strconv.ParseUint(query.Get("uid"), 10, 32)
+	if err != nil || uint32(target) != uid {
+		return ""
+	}
+	room, err := strconv.ParseUint(query.Get("roomid"), 10, 64)
+	if err != nil || uint32(room) == 0 {
+		return ""
+	}
+	return strconv.FormatUint(room, 10)
 }
 
 func (s Stream) URL() string {
