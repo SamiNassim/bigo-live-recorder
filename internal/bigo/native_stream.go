@@ -384,12 +384,9 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 			if e != nil {
 				return e
 			}
-			f, e := assembly.add(p)
+			frames, e = assembly.add(p)
 			if e != nil {
 				return e
-			}
-			if f != nil {
-				frames = append(frames, *f)
 			}
 		} else if !c.video && packet.uri == 2 {
 			frames, err = decodeNativeAudio(packet.data)

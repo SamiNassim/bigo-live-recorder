@@ -38,15 +38,15 @@ func TestNativeVideoAssemblyWaitsForLastFragment(t *testing.T) {
 		if i == 0 {
 			part.data = data
 		}
-		frame, err := assembly.add(part)
+		frames, err := assembly.add(part)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if i < 199 && frame != nil {
+		if i < 199 && len(frames) != 0 {
 			t.Fatalf("emitted incomplete frame at fragment %d", i)
 		}
-		if i == 199 && (frame == nil || frame.pts != 1234 || len(frame.data) != len(data)-9+199) {
-			t.Fatalf("assembled frame=%+v", frame)
+		if i == 199 && (len(frames) != 1 || frames[0].pts != 1234 || len(frames[0].data) != len(data)-9+199) {
+			t.Fatalf("assembled frames=%+v", frames)
 		}
 	}
 	if assembly.bytes != 0 || len(assembly.frames) != 0 {
