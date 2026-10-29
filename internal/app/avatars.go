@@ -93,15 +93,15 @@ func (a *application) loadAvatar(address string) {
 	if a.avatars[address] != nil || a.avatarLoading[address] || len(a.avatarLoading) >= maxAvatarDownloads {
 		return
 	}
-	u, err := url.Parse(address)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	downloadURL, err := avatarDownloadURL(address)
+	if err != nil {
 		return
 	}
 	a.avatarLoading[address] = true
 	go func() {
 		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 		defer cancel()
-		bitmap, err := fetchAvatar(ctx, avatarClient, address)
+		bitmap, err := fetchAvatar(ctx, avatarClient, downloadURL)
 		if a.ctx.Err() != nil {
 			return
 		}
@@ -124,6 +124,20 @@ func (a *application) loadAvatar(address string) {
 			a.keepAvatar(address, bitmap)
 		})
 	}()
+}
+
+// BIGO can advertise public thumbnails over HTTP even though the same CDN
+// serves them over HTTPS. Keep the original cache key and upgrade the download.
+func avatarDownloadURL(address string) (string, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return "", err
+	}
+	if u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", errors.New("invalid avatar URL")
+	}
+	u.Scheme = "https"
+	return u.String(), nil
 }
 
 // No playback cookies or API headers are sent to public image CDNs.

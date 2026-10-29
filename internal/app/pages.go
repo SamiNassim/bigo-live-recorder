@@ -55,7 +55,7 @@ func (a *application) streamers(c *ui.Context) {
 					ui.Row(c).Height(58).Gap(12).AlignItems(ui.Center).Children(func() {
 						initial, _ := utf8.DecodeRuneInString(r.Streamer.DisplayName())
 						if avatar := a.avatar(c, r.Streamer.Avatar); avatar != nil {
-							ui.Image(c, avatar).Size(34, 34).Radius(17)
+							ui.Image(c, avatar).Label("Avatar for "+r.Streamer.ID).Size(34, 34).Radius(17)
 						} else {
 							ui.Box(c).Size(34, 34).Radius(17).Background(t.Accent.Alpha(0.15)).Center().Children(func() { ui.Text(c, strings.ToUpper(string(initial))).FontWeight(600).TextColor(t.Accent) })
 						}
