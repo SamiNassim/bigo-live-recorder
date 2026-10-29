@@ -18,6 +18,14 @@ type tableCache[T comparable] struct {
 	valid  bool
 }
 
+func (cache *tableCache[T]) invalidate(source []T) bool {
+	if cache.valid && !slices.Equal(cache.source, source) {
+		*cache = tableCache[T]{}
+		return true
+	}
+	return false
+}
+
 func (cache *tableCache[T]) get(source []T, key [4]string, build func([]T) []T) []T {
 	changed := !cache.valid || !slices.Equal(cache.source, source)
 	if changed || cache.key != key {

@@ -48,6 +48,45 @@ func TestBackgroundRefreshKeepsHiddenPagesCurrentWithoutRedrawing(t *testing.T) 
 	}
 }
 
+func TestHiddenTablesReleaseObsoleteSnapshotsAndMenus(t *testing.T) {
+	a := accountFixture(t)
+	a.log.Write("INFO", "fixture", "Synthetic event")
+	if err := a.store.Update(func(data *state.Data) error {
+		data.Recordings = []state.Recording{{ID: "fixture", Path: "fixture.mkv", StartedAt: time.Now()}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.refresh()
+	a.page = "logs"
+	tt := ui.NewTester(a.view, 1050, 650)
+	a.page = "recordings"
+	tt.Frame()
+	a.page = "settings"
+	tt.Frame()
+	if !a.logRowsCache.valid || !a.recordRows.valid {
+		t.Fatal("the hidden table snapshots were not cached")
+	}
+	a.log.ClearView()
+	if err := a.store.Update(func(data *state.Data) error { data.Recordings = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if a.refreshVisible() {
+		t.Fatal("clearing hidden tables repainted Settings")
+	}
+	if a.logRowsCache.source != nil || a.logRowsCache.rows != nil || a.recordRows.source != nil || a.recordRows.rows != nil {
+		t.Fatal("obsolete table snapshots remain retained")
+	}
+	if a.logList.Key != nil || a.recordList.Key != nil || a.recordList.CellMenu != nil {
+		t.Fatal("a hidden row callback retained obsolete entries")
+	}
+	a.page = "logs"
+	tt.Frame()
+	if tt.HasText("Synthetic event") {
+		t.Fatal("a cleared log returned after navigation")
+	}
+}
+
 func TestOverscanClocksDoNotKeepRequestingFrames(t *testing.T) {
 	a := accountFixture(t)
 	for i := range 30 {

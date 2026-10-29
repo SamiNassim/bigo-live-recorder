@@ -124,6 +124,16 @@ func (a *application) refreshVisible() bool {
 	if entries, revision := a.log.EntriesSince(a.logRevision); revision != a.logRevision {
 		a.logs, a.logRevision = entries, revision
 	}
+	// A hidden table must not pin messages or paths from an obsolete snapshot.
+	if snapshotChanged && a.page != "streamers" && a.streamRows.invalidate(a.snapshot.Rows) {
+		a.streamList.Key, a.streamList.CellMenu = nil, nil
+	}
+	if dataRevision != a.dataRevision && a.page != "recordings" && a.recordRows.invalidate(a.data.Recordings) {
+		a.recordList.Key, a.recordList.CellMenu = nil, nil
+	}
+	if logRevision != a.logRevision && a.page != "logs" && a.logRowsCache.invalidate(a.logs) {
+		a.logList.Key = nil
+	}
 	a.pruneAvatars()
 	sidebarChanged := listener != a.snapshot.Listener
 	switch a.page {
