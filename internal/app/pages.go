@@ -46,6 +46,7 @@ func (a *application) streamers(c *ui.Context) {
 			})
 		} else {
 			columns := []ui.TableColumn{{Title: "Streamer", MinWidth: 160}, {Title: "Status", Width: 160}, {Title: "Duration", Width: 80}, {Title: "Last recorded", Width: 140}, {Title: "Next check", Width: 100}, {Title: "Priority", Width: 80}, {Title: "", ID: "actions", Width: 52, Fixed: true}}
+			first, last := a.streamList.Visible()
 			ui.Table(c, &a.streamList, columns, len(rows), func(row, col int) {
 				r := rows[row]
 				switch col {
@@ -99,8 +100,11 @@ func (a *application) streamers(c *ui.Context) {
 				case 2:
 					label := "—"
 					if !r.StartedAt.IsZero() {
-						c.After(time.Second)
-						label = duration(time.Since(r.StartedAt))
+						elapsed := c.Now().Sub(r.StartedAt)
+						if row >= first && row <= last {
+							refreshClock(c, elapsed, false)
+						}
+						label = duration(elapsed)
 					}
 					ui.Text(c, label).FontSize(12)
 				case 3:
@@ -108,9 +112,9 @@ func (a *application) streamers(c *ui.Context) {
 				case 4:
 					label := "—"
 					if !r.NextCheck.IsZero() && r.Status != "Recording" && !r.Streamer.Paused {
-						remaining := time.Until(r.NextCheck)
-						if remaining > 0 {
-							c.After(min(time.Second, remaining))
+						remaining := r.NextCheck.Sub(c.Now())
+						if row >= first && row <= last {
+							refreshClock(c, remaining, true)
 						}
 						label = "In " + duration(remaining)
 					}
@@ -254,6 +258,7 @@ func (a *application) recordings(c *ui.Context) {
 	a.recordList.KeepOffset = true
 	services := c.Services()
 	a.recordList.CellMenu = func(m *ui.Menu, row, _ int) { a.recordingMenu(m, recordings[row], services) }
+	first, last := a.recordList.Visible()
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 		ui.Table(c, &a.recordList, []ui.TableColumn{{Title: "Streamer", Width: 150}, {Title: "Started", Width: 150}, {Title: "Duration", Width: 90}, {Title: "Size", Width: 85}, {Title: "File", MinWidth: 140}, {Title: "", ID: "open", Width: 75}}, len(recordings), func(row, col int) {
 			r := recordings[row]
@@ -263,11 +268,11 @@ func (a *application) recordings(c *ui.Context) {
 			case 1:
 				ui.Text(c, timestamp(r.StartedAt)).FontSize(11)
 			case 2:
-				d := time.Since(r.StartedAt)
+				d := c.Now().Sub(r.StartedAt)
 				if !r.EndedAt.IsZero() {
 					d = r.EndedAt.Sub(r.StartedAt)
-				} else {
-					c.After(time.Second)
+				} else if row >= first && row <= last {
+					refreshClock(c, d, false)
 				}
 				ui.Text(c, duration(d)).FontSize(11)
 			case 3:

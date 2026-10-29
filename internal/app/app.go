@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,9 +105,18 @@ func (a *application) update(fn func()) {
 		fn()
 	}
 }
-func (a *application) refresh() {
+func (a *application) refresh() { a.refreshVisible() }
+
+// Refresh every snapshot, but repaint only when the current page or sidebar
+// shows the change. Hidden pages read the latest data when they are opened.
+func (a *application) refreshVisible() bool {
+	listener := a.snapshot.Listener
+	queueTargets := a.snapshot.QueueTargets
+	records := a.data.Recordings
+	dataRevision, logRevision := a.dataRevision, a.logRevision
+	snapshotChanged := false
 	if a.engine != nil {
-		a.snapshot, _ = a.engine.SnapshotIfChanged(a.snapshot)
+		a.snapshot, snapshotChanged = a.engine.SnapshotIfChanged(a.snapshot)
 	}
 	if data, revision := a.store.DataSince(a.dataRevision); revision != a.dataRevision {
 		a.data, a.dataRevision = data, revision
@@ -115,6 +125,29 @@ func (a *application) refresh() {
 		a.logs, a.logRevision = entries, revision
 	}
 	a.pruneAvatars()
+	sidebarChanged := listener != a.snapshot.Listener
+	switch a.page {
+	case "logs":
+		return sidebarChanged || logRevision != a.logRevision
+	case "recordings":
+		return sidebarChanged || dataRevision != a.dataRevision && !slices.Equal(records, a.data.Recordings)
+	case "settings":
+		return sidebarChanged || queueTargets != a.snapshot.QueueTargets
+	default:
+		return sidebarChanged || snapshotChanged
+	}
+}
+
+func (a *application) refreshBackground() {
+	if a.window == nil {
+		a.refresh()
+		return
+	}
+	mygo.RunOnMain(func() {
+		if a.ctx.Err() == nil && a.refreshVisible() {
+			a.window.Invalidate()
+		}
+	})
 }
 func (a *application) work(fn func() error) {
 	if a.busy {
@@ -268,7 +301,7 @@ func (a *application) updates() {
 			nextData, nextLog := a.store.DataRevision(), a.log.Revision()
 			if changed || nextData != dataRevision || nextLog != logRevision {
 				dataRevision, logRevision = nextData, nextLog
-				a.update(a.refresh)
+				a.refreshBackground()
 			}
 		case event := <-events:
 			a.update(func() {
