@@ -47,6 +47,9 @@ type application struct {
 	logs          []logging.Entry
 	dataRevision  uint64
 	logRevision   uint64
+	streamRows    tableCache[monitor.Row]
+	logRowsCache  tableCache[logging.Entry]
+	recordRows    tableCache[state.Recording]
 
 	page                            string
 	query, status, priority, order  string

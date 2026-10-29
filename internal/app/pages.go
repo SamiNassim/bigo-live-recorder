@@ -30,7 +30,7 @@ func (a *application) streamers(c *ui.Context) {
 			ui.Select(c, &a.order, []string{"Last recorded", "Name", "Date added", "Status"}).Width(144).Height(34).Label("Sort streamers")
 		})
 		ui.Divider(c)
-		rows := filteredRows(a.snapshot.Rows, a.query, a.status, a.priority, a.order)
+		rows := a.streamerRows()
 		a.streamList.Key = func(i int) any { return rows[i].Streamer.ID }
 		a.streamList.KeepOffset = true
 		a.streamList.CellMenu = func(m *ui.Menu, row, _ int) { a.streamMenu(m, rows[row]) }
@@ -210,7 +210,7 @@ func (a *application) logsPage(c *ui.Context) {
 			}
 		})
 		ui.Divider(c)
-		entries := filteredLogs(a.logs, a.logQuery, a.level)
+		entries := a.logRows()
 		a.logList.Key = func(i int) any { return entries[i].Sequence }
 		a.logList.KeepOffset = true
 		ui.Table(c, &a.logList, []ui.TableColumn{{Title: "Time", Width: 150}, {Title: "Level", Width: 70}, {Title: "Streamer", Width: 140}, {Title: "Message", MinWidth: 200}}, len(entries), func(row, col int) {
@@ -249,8 +249,7 @@ func (a *application) recordings(c *ui.Context) {
 			a.openFolder(a.cfg.RecordingPath)
 		}
 	})
-	recordings := slices.Clone(a.data.Recordings)
-	slices.SortFunc(recordings, func(a, b state.Recording) int { return b.StartedAt.Compare(a.StartedAt) })
+	recordings := a.recordingRows()
 	a.recordList.Key = func(i int) any { return recordings[i].ID }
 	a.recordList.KeepOffset = true
 	services := c.Services()
