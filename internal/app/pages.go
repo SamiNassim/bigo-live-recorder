@@ -46,6 +46,7 @@ func (a *application) streamers(c *ui.Context) {
 			})
 		} else {
 			columns := []ui.TableColumn{{Title: "Streamer", MinWidth: 160}, {Title: "Status", Width: 160}, {Title: "Duration", Width: 80}, {Title: "Last recorded", Width: 140}, {Title: "Next check", Width: 100}, {Title: "Priority", Width: 80}, {Title: "", ID: "actions", Width: 52, Fixed: true}}
+			listening := a.snapshot.Listener.Connected && a.store.Config().NativeListening
 			first, last := a.streamList.Visible()
 			ui.Table(c, &a.streamList, columns, len(rows), func(row, col int) {
 				r := rows[row]
@@ -110,15 +111,12 @@ func (a *application) streamers(c *ui.Context) {
 				case 3:
 					ui.Text(c, timestamp(r.Streamer.LastRecordedAt)).FontSize(11).TextColor(t.TextMuted)
 				case 4:
-					label := "—"
-					if !r.NextCheck.IsZero() && r.Status != "Recording" && !r.Streamer.Paused {
-						remaining := r.NextCheck.Sub(c.Now())
-						if row >= first && row <= last {
-							refreshClock(c, remaining, true)
-						}
-						label = "In " + duration(remaining)
+					label := nextCheckText(c, r, row >= first && row <= last, listening)
+					color := t.TextMuted
+					if label == "Listening" {
+						color = t.Success
 					}
-					ui.Text(c, label).FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, label).FontSize(11).TextColor(color)
 				case 5:
 					label := "Normal"
 					if r.Streamer.LowPriority {
