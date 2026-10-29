@@ -25,6 +25,7 @@ type nativeMediaConn struct {
 	subscribed   bool
 	subscription uint64
 	confirmed    bool
+	report       func(string, string)
 }
 
 func dialNativeMedia(ctx context.Context, routes []mediaProxy, viewer, sid uint32, video bool) (*nativeMediaConn, error) {
@@ -206,6 +207,10 @@ type nativeReadCloser struct {
 	done   <-chan struct{}
 }
 
+// NativeTimestamps identifies the normalized clock maintained across native
+// media reconnects. Consumers must preserve it instead of correcting it again.
+func (r *nativeReadCloser) NativeTimestamps() bool { return true }
+
 func (r *nativeReadCloser) Close() error {
 	r.cancel()
 	err := r.PipeReader.Close()
@@ -216,10 +221,10 @@ func (r *nativeReadCloser) Close() error {
 }
 
 func openNativeStream(parent context.Context, source Stream) (io.ReadCloser, error) {
-	return openNativeStreamClock(parent, source, nil)
+	return openNativeStreamClock(parent, source, nil, nil)
 }
 
-func openNativeStreamClock(parent context.Context, source Stream, clock *nativeTSClock) (io.ReadCloser, error) {
+func openNativeStreamClock(parent context.Context, source Stream, clock *nativeTSClock, report func(string, string)) (io.ReadCloser, error) {
 	ctx, cancel := context.WithCancel(parent)
 	channel := source.native
 	if channel == nil {
@@ -239,6 +244,7 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 		cancel()
 		return nil, err
 	}
+	audio.report = report
 	stop := context.AfterFunc(ctx, func() { video.Close(); audio.Close() })
 	cleanup := func() { cancel(); stop(); video.Close(); audio.Close() }
 	if err = video.send(0x37902, nativeLoginBody(channel, source.UID, true)); err == nil {
@@ -295,9 +301,6 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 			workers.Wait()
 			return nil, err
 		case f := <-events:
-			if !f.video {
-				audioReady = true
-			}
 			if f.video && f.key && first == nil {
 				if _, err := nativeVideoType(f.codec); err != nil {
 					cleanup()
@@ -307,6 +310,18 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 				first = &f
 			}
 			if first != nil {
+				if !f.video {
+					delta := int32(f.pts - first.pts)
+					if delta < 0 {
+						continue // Cached audio predating this video connection.
+					}
+					if delta > 10000 {
+						cleanup()
+						workers.Wait()
+						return nil, errors.New("BIGO native audio and video startup clocks diverged")
+					}
+					audioReady = true
+				}
 				waiting = append(waiting, f)
 			}
 			if len(waiting) > 128 {
@@ -366,6 +381,8 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 
 func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFrame) error {
 	var assembly nativeVideoAssembler
+	var lastAudioWarning time.Time
+	var invalidAudio error
 	lastMedia := time.Now()
 	for {
 		if err := c.SetReadDeadline(lastMedia.Add(20 * time.Second)); err != nil {
@@ -373,6 +390,9 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 		}
 		packet, err := readNativePacket(c.Conn)
 		if err != nil {
+			if invalidAudio != nil {
+				return fmt.Errorf("BIGO native audio did not resume after malformed AAC: %w", errors.Join(err, invalidAudio))
+			}
 			return err
 		}
 		var frames []nativeMediaFrame
@@ -390,7 +410,16 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 			}
 		} else if !c.video && packet.uri == 2 {
 			frames, err = decodeNativeAudio(packet.data)
-			if err != nil {
+			if errors.Is(err, errNativeAACFrame) {
+				invalidAudio = err
+				// Do not tear down healthy video for one bad audio sample. A
+				// continuing invalid stream still hits the media deadline, which
+				// advances only when usable audio is delivered.
+				if c.report != nil && time.Since(lastAudioWarning) >= 30*time.Second {
+					c.report("WARN", "Discarded malformed native audio; waiting for valid AAC: "+err.Error())
+					lastAudioWarning = time.Now()
+				}
+			} else if err != nil {
 				return err
 			}
 		} else if err = c.control(packet); err != nil {
@@ -398,6 +427,9 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 		}
 		for _, f := range frames {
 			lastMedia = time.Now()
+			if !f.video {
+				invalidAudio = nil
+			}
 			select {
 			case out <- f:
 			case <-ctx.Done():

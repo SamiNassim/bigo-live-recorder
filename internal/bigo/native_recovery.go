@@ -11,7 +11,7 @@ import (
 func openNativeRecoveringStream(parent context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (io.ReadCloser, error) {
 	ctx, cancel := context.WithCancel(parent)
 	clock := &nativeTSClock{}
-	stream, err := openNativeStreamClock(ctx, source, clock)
+	stream, err := openNativeStreamClock(ctx, source, clock, recovery.Report)
 	if err != nil {
 		cancel()
 		if parent.Err() != nil {
@@ -59,7 +59,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 				return
 			}
 			if recovery.Report != nil {
-				recovery.Report("WARN", "Native media disconnected; recovering inside the current recording")
+				recovery.Report("WARN", "Native media disconnected; recovering inside the current recording: "+err.Error())
 			}
 			recovered := false
 			for attempt := 0; attempt < 3; attempt++ {
@@ -80,7 +80,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 					return
 				}
 				if fresh.native != nil {
-					stream, err = openNativeStreamClock(ctx, fresh, clock)
+					stream, err = openNativeStreamClock(ctx, fresh, clock, recovery.Report)
 				} else {
 					// An HLS fallback can have a different codec. Finalize this
 					// MKV before the monitor starts a compatible new recording.

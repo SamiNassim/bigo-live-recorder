@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 )
 
 type nativeTSClock struct {
@@ -30,15 +31,17 @@ func nativeVideoType(codec byte) (byte, error) {
 // nativeTSMux packages Annex B video and ADTS audio without changing either
 // elementary stream. This gives FFmpeg one timestamped input on every OS.
 type nativeTSMux struct {
-	out                      io.Writer
-	base                     uint32
-	codec                    byte
-	continuity               map[uint16]byte
-	started                  bool
-	lastTables, lastVideoDTS int64
-	startPTS                 int64
-	offset                   int64
-	clock                    *nativeTSClock
+	out                          io.Writer
+	base                         uint32
+	codec                        byte
+	continuity                   map[uint16]byte
+	started                      bool
+	lastTables, lastVideoDTS     int64
+	startPTS                     int64
+	offset                       int64
+	clock                        *nativeTSClock
+	lastAudioPTS                 int64
+	lastVideoTime, lastAudioTime time.Time
 }
 
 func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
@@ -85,14 +88,24 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	// Start at this connection's first video keyframe, even when the shared
 	// recording clock began on an earlier socket.
 	if pts < 0 || (!f.video && pts < m.startPTS) {
+		if (f.video && pts < m.startPTS-10*90000) || (!f.video && !m.lastAudioTime.IsZero() && pts < m.lastAudioPTS-10*90000) {
+			return errors.New("BIGO native media clock moved backward; a new media connection is required")
+		}
 		return nil
 	}
 	dts := pts
+	now := time.Now()
 	if f.video {
 		if codec != m.codec {
 			return errors.New("BIGO native video codec changed")
 		}
 		dts = int64(int32(f.dts-m.base))*90 + m.offset
+		if nativeClockJump(dts, m.lastVideoDTS, now, m.lastVideoTime) {
+			return errors.New("BIGO native video timestamp jumped; a new media connection is required")
+		}
+		if nativeClockJump(dts, m.lastAudioPTS, now, m.lastAudioTime) {
+			return errors.New("BIGO native video and audio clocks diverged; a new media connection is required")
+		}
 		if dts > pts {
 			dts = pts
 		}
@@ -105,7 +118,13 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		if pts < dts {
 			pts = dts
 		}
-		m.lastVideoDTS = dts
+	} else {
+		if nativeClockJump(pts, m.lastAudioPTS, now, m.lastAudioTime) {
+			return errors.New("BIGO native audio timestamp jumped; a new media connection is required")
+		}
+		if nativeClockJump(pts, m.lastVideoDTS, now, m.lastVideoTime) {
+			return errors.New("BIGO native audio and video clocks diverged; a new media connection is required")
+		}
 	}
 	if pts-m.lastTables >= 45000 || f.key {
 		if err := m.tables(); err != nil {
@@ -135,6 +154,11 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	if err := m.packets(pid, pes, f.video, f.key, dts); err != nil {
 		return err
 	}
+	if f.video {
+		m.lastVideoDTS, m.lastVideoTime = dts, now
+	} else {
+		m.lastAudioPTS, m.lastAudioTime = pts, now
+	}
 	if m.clock != nil {
 		m.clock.mu.Lock()
 		m.clock.lastPTS = max(m.clock.lastPTS, pts)
@@ -144,6 +168,20 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		m.clock.mu.Unlock()
 	}
 	return nil
+}
+
+// Independent media sockets can briefly lead or lag each other. A timestamp
+// changing ten seconds more than elapsed time is a discontinuity, not ordinary
+// network jitter or video reordering. Reject it before advancing either clock:
+// clamping all later video to one bad future timestamp loses synchronization.
+func nativeClockJump(current, previous int64, now, received time.Time) bool {
+	if received.IsZero() {
+		return false
+	}
+	delta := current - previous
+	elapsed := max(int64(0), now.Sub(received).Milliseconds()) * 90
+	const tolerance = 10 * 90000
+	return delta < -tolerance || delta > elapsed+tolerance
 }
 
 func tsTimestamp(v int64, prefix byte) []byte {

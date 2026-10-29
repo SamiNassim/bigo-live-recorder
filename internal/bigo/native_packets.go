@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 const maxNativeFrameBytes = 8 << 20
+
+var errNativeAACFrame = errors.New("invalid BIGO native AAC frame")
 
 type nativePacket struct {
 	uri    uint32
@@ -266,10 +269,17 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 			r.take(skip - r.off)
 		}
 	}
-	var frames []nativeMediaFrame
-	var samples uint64
-	for range int(f >> 5) {
-		r.u8() // per-frame flags
+	// Each packet carries at most seven independently framed AAC samples. Keep
+	// valid samples even when another sample in the packet is malformed.
+	type sample struct {
+		data []byte
+		rate int
+	}
+	var samples [7]sample
+	count, rate := int(f>>5), 0
+	var invalid error
+	for i := range count {
+		flags := r.u8()
 		length := r.u16()
 		if length&0xfc00 != 0xfc00 {
 			return nil, errors.New("invalid BIGO AAC frame length")
@@ -278,15 +288,34 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 		if r.err != nil {
 			return nil, r.err
 		}
-		rate, err := nativeAACRate(frame)
+		sampleRate, err := nativeAACRate(frame)
 		if err != nil {
-			return nil, err
+			invalid = errors.Join(invalid, fmt.Errorf("%w: codec=%d flags=%#x bytes=%d: %v", errNativeAACFrame, codec, flags, len(frame), err))
+		} else {
+			rate = sampleRate
 		}
-		timestamp := pts + uint32(samples*1000/uint64(rate))
-		frames = append(frames, nativeMediaFrame{data: frame, pts: timestamp, dts: timestamp})
-		samples += 1024
+		samples[i] = sample{data: frame, rate: sampleRate}
 	}
-	return frames, r.err
+	if r.err != nil {
+		return nil, r.err
+	}
+	var frames []nativeMediaFrame
+	var elapsed uint64 // nanoseconds; include rejected samples in the timeline.
+	for _, sample := range samples[:count] {
+		if sample.rate != 0 {
+			rate = sample.rate
+			timestamp := pts + uint32(elapsed/uint64(time.Millisecond))
+			frames = append(frames, nativeMediaFrame{data: sample.data, pts: timestamp, dts: timestamp})
+		}
+		if rate != 0 {
+			blocks := uint64(1)
+			if sample.rate != 0 {
+				blocks += uint64(sample.data[6] & 3)
+			}
+			elapsed += blocks * 1024 * uint64(time.Second) / uint64(rate)
+		}
+	}
+	return frames, invalid
 }
 
 func nativeAACRate(data []byte) (int, error) {
