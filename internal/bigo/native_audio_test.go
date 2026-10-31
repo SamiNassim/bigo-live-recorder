@@ -109,8 +109,8 @@ func TestNativeAudioReceiverContinuesAfterRejectedSample(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("audio receiver did not finish")
 	}
-	if len(out) != 3 || len(warnings) != 1 {
-		t.Fatal("lost valid audio or flooded warnings", len(out), warnings)
+	if len(out) != 3 || len(warnings) != 0 {
+		t.Fatal("lost valid audio or logged a recoverable sample rejection", len(out), warnings)
 	}
 	for len(out) > 0 {
 		if !bytes.Equal((<-out).data, adts) {

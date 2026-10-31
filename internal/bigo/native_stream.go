@@ -437,7 +437,6 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 
 func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFrame) error {
 	router := nativeVideoRouter{owner: c.owner}
-	var lastAudioWarning time.Time
 	var invalidAudio error
 	lastMedia := time.Now()
 	for {
@@ -471,10 +470,6 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 				// Do not tear down healthy video for one bad audio sample. A
 				// continuing invalid stream still hits the media deadline, which
 				// advances only when usable audio is delivered.
-				if c.report != nil && time.Since(lastAudioWarning) >= 30*time.Second {
-					c.report("WARN", "Discarded malformed native audio; waiting for valid AAC: "+err.Error())
-					lastAudioWarning = time.Now()
-				}
 			} else if err != nil {
 				return err
 			}
