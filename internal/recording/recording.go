@@ -4,13 +4,8 @@ package recording
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -31,19 +26,23 @@ type Result struct {
 }
 
 type Handle struct {
-	Path      string
-	StartedAt time.Time
-	cancel    context.CancelFunc
-	done      chan struct{}
-	result    Result // published by closing done
+	Path           string
+	StartedAt      time.Time
+	cancel         context.CancelFunc
+	done           chan struct{}
+	result         Result // published by closing done
+	mu             sync.Mutex
+	currentPath    string
+	currentStarted time.Time
+	changes        []FileChange
 }
 
 func (h *Handle) Stop()                 { h.cancel() }
 func (h *Handle) Done() <-chan struct{} { return h.done }
 func (h *Handle) Result() Result        { <-h.done; return h.result }
 
-func (h *Handle) File() string       { return h.Path }
-func (h *Handle) Started() time.Time { return h.StartedAt }
+func (h *Handle) File() string       { h.mu.Lock(); defer h.mu.Unlock(); return h.currentPath }
+func (h *Handle) Started() time.Time { h.mu.Lock(); defer h.mu.Unlock(); return h.currentStarted }
 
 func FindFFmpeg(configured string) (string, error) {
 	return ffmpeg.Find(configured)
@@ -56,78 +55,31 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	if err != nil {
 		return nil, err
 	}
-	stamp := time.Now()
-	var suffix [4]byte
-	if _, err = rand.Read(suffix[:]); err != nil {
-		return nil, err
-	}
-	path := recordingPath(s, cfg, stamp, hex.EncodeToString(suffix[:]))
-	if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, fmt.Errorf("create recording folder: %w", err)
-	}
 	ctx, cancel := context.WithCancel(parent)
-	stream, err := bigo.OpenRecoveringStream(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
+	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	cmd := exec.Command(ffmpeg, recordingArgs(stream, path)...)
-	configureCommand(cmd)
-	stdin, err := cmd.StdinPipe()
+	return startCapture(ctx, cancel, ffmpeg, s, cfg, capture, recovery.Report)
+}
+
+func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string, s state.Streamer, cfg state.Config, capture bigo.Capture, report func(string, string)) (*Handle, error) {
+	part, err := capture.Next(ctx)
 	if err != nil {
 		cancel()
-		stream.Close()
+		capture.Close()
 		return nil, err
 	}
-	var stderr tailBuffer
-	cmd.Stderr = &stderr
-	if err = cmd.Start(); err != nil {
+	current, err := startFile(ffmpeg, s, cfg, part)
+	if err != nil {
 		cancel()
-		stream.Close()
-		stdin.Close()
-		return nil, fmt.Errorf("start FFmpeg: %w", err)
+		part.Close()
+		capture.Close()
+		return nil, err
 	}
-	h := &Handle{Path: path, StartedAt: stamp, cancel: cancel, done: make(chan struct{})}
-	go func() {
-		defer close(h.done)
-		defer cancel()
-		defer stream.Close()
-		copyDone := make(chan error, 1)
-		go func() { _, e := io.Copy(stdin, stream); stdin.Close(); copyDone <- e }()
-		wait := make(chan error, 1)
-		go func() { wait <- cmd.Wait() }()
-		var waitErr, copyErr error
-		select {
-		case waitErr = <-wait:
-			stream.Close()
-			stdin.Close()
-			copyErr = <-copyDone
-		case copyErr = <-copyDone:
-			waitErr = finish(cmd, wait)
-		case <-ctx.Done():
-			stream.Close()
-			stdin.Close()
-			waitErr = finish(cmd, wait)
-			copyErr = <-copyDone
-		}
-		// Stop is a normal graceful end, but an encoder/muxer failure is not.
-		if waitErr != nil {
-			err = fmt.Errorf("FFmpeg: %w: %s", waitErr, stderr.String())
-		} else if ctx.Err() == nil && copyErr != nil {
-			err = copyErr
-		} else {
-			err = nil
-		}
-		info, statErr := os.Stat(path)
-		var size int64
-		if statErr == nil {
-			size = info.Size()
-		}
-		if size == 0 && err == nil {
-			err = errors.New("FFmpeg produced no media")
-		}
-		h.result = Result{Path: path, Bytes: size, EndedAt: time.Now(), Err: err}
-	}()
+	h := &Handle{Path: current.path, StartedAt: current.started, currentPath: current.path, currentStarted: current.started, cancel: cancel, done: make(chan struct{})}
+	go h.record(ctx, capture, current, ffmpeg, s, cfg, report)
 	return h, nil
 }
 

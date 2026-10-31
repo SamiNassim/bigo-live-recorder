@@ -110,14 +110,20 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 	if err != nil {
 		return nil, err
 	}
-	return recording.Start(ctx, streamer, stream, cfg, bigo.StreamRecovery{
+	recovery := bigo.StreamRecovery{
 		// Recovery is called only after a media error or stall, never while
 		// recording advances normally. Always resolve the current room anew.
 		Refresh: func(ctx context.Context) (bigo.Stream, error) {
 			return e.refreshPlayback(ctx, streamer, cfg)
 		},
 		Report: func(level, message string) { e.log.Write(level, streamer.ID, message) },
-	})
+	}
+	if e.wantsNative(streamer, cfg) {
+		recovery.Origin = func(ctx context.Context, current bigo.Stream) (bigo.Stream, error) {
+			return e.client.(nativeStreamClient).OriginStream(ctx, current, e.hub)
+		}
+	}
+	return recording.Start(ctx, streamer, stream, cfg, recovery)
 }
 
 func (e *Engine) refreshPlayback(ctx context.Context, streamer state.Streamer, cfg state.Config) (bigo.Stream, error) {
@@ -496,6 +502,7 @@ func (e *Engine) reconcile() {
 		}
 		it.row.Streamer = s
 		if it.handle != nil {
+			e.fileChanges(it)
 			select {
 			case <-it.handle.Done():
 				e.completed(it)
@@ -843,6 +850,7 @@ func (e *Engine) check(id string) {
 }
 
 func (e *Engine) completed(it *item) {
+	e.fileChanges(it)
 	r := it.handle.Result()
 	e.persist(func(d *state.Data) {
 		for i := range d.Recordings {
@@ -880,6 +888,59 @@ func (e *Engine) completed(it *item) {
 	}
 	// One end-of-recording verification can recover an interrupted HLS session.
 	it.initial = false
+}
+
+func (e *Engine) fileChanges(it *item) {
+	files, ok := it.handle.(interface{ DrainFileChanges() []recording.FileChange })
+	if !ok {
+		return
+	}
+	changes := files.DrainFileChanges()
+	if len(changes) == 0 {
+		return
+	}
+	id := it.row.Streamer.ID
+	e.persist(func(d *state.Data) {
+		for _, change := range changes {
+			if change.Result != nil {
+				for i := range d.Recordings {
+					if d.Recordings[i].Path == change.Path {
+						r := change.Result
+						d.Recordings[i].EndedAt = r.EndedAt
+						d.Recordings[i].Bytes = r.Bytes
+						if r.Err != nil {
+							d.Recordings[i].Error = r.Err.Error()
+						}
+					}
+				}
+				continue
+			}
+			if !slices.ContainsFunc(d.Recordings, func(r state.Recording) bool { return r.Path == change.Path }) {
+				d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", change.StartedAt.UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: change.Path, StartedAt: change.StartedAt})
+			}
+			for i := range d.Streamers {
+				if d.Streamers[i].ID == id {
+					d.Streamers[i].LastRecordedAt = change.StartedAt
+				}
+			}
+		}
+	})
+	for _, change := range changes {
+		if r := change.Result; r != nil {
+			if r.Err != nil {
+				e.log.Write("WARN", id, "Recording file ended: "+r.Err.Error())
+			} else {
+				e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
+				if it.config.PostProcess && r.Bytes > 0 && e.ctx.Err() == nil {
+					e.processCopy(id, r.Path, it.config)
+				}
+			}
+		} else {
+			it.row.Path, it.row.StartedAt = change.Path, change.StartedAt
+			it.row.Streamer.LastRecordedAt = change.StartedAt
+			e.log.Write("INFO", id, "Recording continued: "+change.Path)
+		}
+	}
 }
 
 func (e *Engine) persist(change func(*state.Data)) {
