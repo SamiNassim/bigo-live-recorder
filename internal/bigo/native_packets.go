@@ -64,6 +64,7 @@ type nativeMediaFrame struct {
 	pts, dts   uint32
 	video, key bool
 	codec      byte
+	reset      bool
 }
 
 type nativeVideoPart struct {
@@ -71,6 +72,7 @@ type nativeVideoPart struct {
 	index, count     int
 	key, split, last bool
 	codec            byte
+	mode             byte
 	data             []byte
 }
 
@@ -108,7 +110,7 @@ func decodeNativeVideo(data []byte) (nativeVideoPart, error) {
 	if f&32 != 0 {
 		e := r.u8()
 		if e&2 != 0 {
-			r.u8()
+			p.mode = r.u8()
 		}
 		if e&4 != 0 {
 			skip = int(r.u8())

@@ -1,6 +1,7 @@
 package bigo
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -21,11 +22,13 @@ type nativeMediaConn struct {
 	net.Conn
 	mu           sync.Mutex
 	viewer, sid  uint32
+	owner        uint32
 	video        bool
 	subscribed   bool
 	subscription uint64
 	confirmed    bool
 	report       func(string, string)
+	availability []byte
 }
 
 func dialNativeMedia(ctx context.Context, routes []mediaProxy, viewer, sid uint32, video bool) (*nativeMediaConn, error) {
@@ -158,7 +161,7 @@ func (c *nativeMediaConn) control(p nativePacket) error {
 		if err := c.send(0x36b802, p.data[:16]); err != nil {
 			return err
 		}
-		if !c.video || c.subscribed {
+		if !c.video {
 			return nil
 		}
 		count := binary.LittleEndian.Uint32(p.data[16:])
@@ -168,11 +171,19 @@ func (c *nativeMediaConn) control(p nativePacket) error {
 		if count > 128 || uint64(count) > uint64(len(p.data)-20) {
 			return errors.New("invalid BIGO native stream list")
 		}
+		available := p.data[16:]
+		if c.subscribed && bytes.Equal(c.availability, available) {
+			return nil
+		}
+		c.availability = append(c.availability[:0], available...)
+		if c.subscribed && c.report != nil {
+			c.report("DEBUG", "Native stream availability changed; reaffirming the Origin subscription")
+		}
 		// Audience playback uses the third channel list and role 3. Copying
 		// availability values into a publisher list selects another rendition.
 		b := binary.LittleEndian.AppendUint32(nil, c.viewer)
 		b = binary.LittleEndian.AppendUint32(b, 1)
-		c.subscription = uint64(time.Now().UnixMilli())
+		c.subscription = max(c.subscription+1, uint64(time.Now().UnixMilli()))
 		b = binary.LittleEndian.AppendUint64(b, c.subscription)
 		b = appendNativeBytes(b, nil)
 		b = appendNativeBytes(b, nil)
@@ -224,7 +235,53 @@ func openNativeStream(parent context.Context, source Stream) (io.ReadCloser, err
 	return openNativeStreamClock(parent, source, nil, nil)
 }
 
-func openNativeStreamClock(parent context.Context, source Stream, clock *nativeTSClock, report func(string, string)) (io.ReadCloser, error) {
+type nativeMediaSession struct {
+	ctx     context.Context
+	cleanup func()
+	workers *sync.WaitGroup
+	events  <-chan nativeMediaFrame
+	failed  <-chan error
+	waiting []nativeMediaFrame
+	end     error
+	once    sync.Once
+}
+
+func (s *nativeMediaSession) Close() error {
+	s.once.Do(func() { s.cleanup(); s.workers.Wait() })
+	return nil
+}
+func (s *nativeMediaSession) next(ctx context.Context) (nativeMediaFrame, error) {
+	if len(s.waiting) > 0 {
+		f := s.waiting[0]
+		s.waiting[0] = nativeMediaFrame{}
+		s.waiting = s.waiting[1:]
+		return f, nil
+	}
+	if s.end != nil {
+		select {
+		case f := <-s.events:
+			return f, nil
+		default:
+			return nativeMediaFrame{}, s.end
+		}
+	}
+	select {
+	case f := <-s.events:
+		return f, nil
+	case err := <-s.failed:
+		if err == nil {
+			err = io.EOF
+		}
+		s.end = err
+		s.Close()
+		return s.next(ctx)
+	case <-ctx.Done():
+		return nativeMediaFrame{}, ctx.Err()
+	case <-s.ctx.Done():
+		return nativeMediaFrame{}, s.ctx.Err()
+	}
+}
+func openNativeMediaSession(parent context.Context, source Stream, report func(string, string)) (*nativeMediaSession, error) {
 	ctx, cancel := context.WithCancel(parent)
 	channel := source.native
 	if channel == nil {
@@ -245,6 +302,8 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 		return nil, err
 	}
 	audio.report = report
+	video.report = report
+	video.owner = source.UID
 	stop := context.AfterFunc(ctx, func() { video.Close(); audio.Close() })
 	cleanup := func() { cancel(); stop(); video.Close(); audio.Close() }
 	if err = video.send(0x37902, nativeLoginBody(channel, source.UID, true)); err == nil {
@@ -331,56 +390,53 @@ func openNativeStreamClock(parent context.Context, source Stream, clock *nativeT
 			}
 		}
 	}
-	codec, _ := nativeVideoType(first.codec)
+	return &nativeMediaSession{ctx: ctx, cleanup: cleanup, workers: &workers, events: events, failed: failed, waiting: waiting}, nil
+}
+
+func openNativeStreamClock(parent context.Context, source Stream, clock *nativeTSClock, report func(string, string)) (io.ReadCloser, error) {
+	session, err := openNativeMediaSession(parent, source, report)
+	if err != nil {
+		return nil, err
+	}
+	codec, _ := nativeVideoType(session.waiting[0].codec)
 	if clock != nil {
 		clock.mu.Lock()
 		changed := clock.started && clock.codec != codec
 		clock.mu.Unlock()
 		if changed {
-			cleanup()
-			workers.Wait()
+			session.Close()
 			return nil, errors.New("BIGO native video codec changed; a new recording file is required")
 		}
 	}
 	reader, writer := io.Pipe()
 	done := make(chan struct{})
-	closePipe := context.AfterFunc(ctx, func() { writer.CloseWithError(ctx.Err()) })
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(ctx, func() { session.Close(); writer.CloseWithError(ctx.Err()) })
 	go func() {
 		defer close(done)
-		defer cleanup()
-		defer closePipe()
-		defer workers.Wait()
+		defer cancel()
+		defer stop()
+		defer session.Close()
 		mux := nativeTSMux{out: writer, clock: clock}
-		write := func(f nativeMediaFrame) error { return mux.writeFrame(f) }
-		var err error
-		for _, f := range waiting {
-			if err = write(f); err != nil {
-				break
+		for {
+			f, err := session.next(ctx)
+			if err == nil {
+				err = mux.writeFrame(f)
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				writer.CloseWithError(err)
+				return
 			}
 		}
-		if err == nil {
-			for {
-				select {
-				case <-ctx.Done():
-					err = ctx.Err()
-				case err = <-failed:
-				case f := <-events:
-					err = write(f)
-				}
-				if err != nil {
-					break
-				}
-			}
-		}
-		writer.CloseWithError(err)
-		// Cancel before joining readers, including while a consumer stops early.
-		cleanup()
 	}()
 	return &nativeReadCloser{PipeReader: reader, cancel: cancel, done: done}, nil
 }
 
 func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFrame) error {
-	var assembly nativeVideoAssembler
+	router := nativeVideoRouter{owner: c.owner}
 	var lastAudioWarning time.Time
 	var invalidAudio error
 	lastMedia := time.Now()
@@ -404,7 +460,7 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 			if e != nil {
 				return e
 			}
-			frames, e = assembly.add(p)
+			frames, e = router.add(p)
 			if e != nil {
 				return e
 			}

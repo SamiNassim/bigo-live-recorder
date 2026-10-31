@@ -15,6 +15,11 @@ import (
 type StreamRecovery struct {
 	Refresh func(context.Context) (Stream, error)
 	Report  func(level, message string)
+	// Origin retries native playback only while a web fallback is in use. It
+	// must use the existing room and shared messaging login, without polling
+	// web presence or playback APIs.
+	Origin  func(context.Context, Stream) (Stream, error)
+	stopHLS func() bool
 }
 
 type hlsPolicy struct {
@@ -59,8 +64,15 @@ func (r *hlsReader) requestContext(ctx context.Context) (context.Context, contex
 	return context.WithDeadline(ctx, r.lastProgress.Add(r.policy.maxStall))
 }
 
+func (r *hlsReader) promoted() bool {
+	return r.recovery.stopHLS != nil && r.recovery.stopHLS()
+}
+
 func (r *hlsReader) read(ctx context.Context) error {
 	for {
+		if r.promoted() {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -70,6 +82,9 @@ func (r *hlsReader) read(ctx context.Context) error {
 			segments = r.cursor.fresh(r.playlist, r.mediaURL)
 		}
 		for _, segment := range segments {
+			if r.promoted() {
+				return nil
+			}
 			requestCtx, cancel := r.requestContext(ctx)
 			media, err := readHLSSegment(requestCtx, r.client, segment, r.referer)
 			cancel()
@@ -95,6 +110,9 @@ func (r *hlsReader) read(ctx context.Context) error {
 				r.nextRefresh = time.Time{}
 				clear(r.failedSources)
 			}
+		}
+		if r.promoted() {
+			return nil
 		}
 		if r.playlist.end && !r.recovering {
 			if !r.enabled || r.recovery.Refresh == nil {
@@ -166,7 +184,7 @@ func (r *hlsReader) trySources(ctx context.Context) bool {
 		urls = append(urls, r.mediaURL)
 	}
 	for _, source := range urls {
-		if ctx.Err() != nil || time.Since(r.lastProgress) >= r.policy.maxStall {
+		if ctx.Err() != nil || r.promoted() || time.Since(r.lastProgress) >= r.policy.maxStall {
 			return false
 		}
 		if failed := r.failedSources[source]; !failed.IsZero() && time.Since(failed) < r.policy.sourceCooldown {
@@ -191,10 +209,13 @@ func (r *hlsReader) trySources(ctx context.Context) bool {
 }
 
 func (r *hlsReader) recover(ctx context.Context) (loaded, ended bool) {
+	if r.promoted() {
+		return false, true
+	}
 	if r.trySources(ctx) {
 		return true, false
 	}
-	if ctx.Err() != nil || time.Since(r.lastProgress) >= r.policy.maxStall || r.recovery.Refresh == nil || r.refreshAttempts >= 3 || time.Now().Before(r.nextRefresh) {
+	if ctx.Err() != nil || r.promoted() || time.Since(r.lastProgress) >= r.policy.maxStall || r.recovery.Refresh == nil || r.refreshAttempts >= 3 || time.Now().Before(r.nextRefresh) {
 		return false, false
 	}
 	r.refreshAttempts++

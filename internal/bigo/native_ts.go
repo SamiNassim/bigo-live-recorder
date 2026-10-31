@@ -42,6 +42,7 @@ type nativeTSMux struct {
 	clock                        *nativeTSClock
 	lastAudioPTS                 int64
 	lastVideoTime, lastAudioTime time.Time
+	noAudio                      bool
 }
 
 func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
@@ -196,6 +197,10 @@ func (m *nativeTSMux) tables() error {
 	}
 	videoType := m.codec
 	pmt := []byte{2, 0xb0, 23, 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0, 0, videoType, 0xe1, 0, 0xf0, 0, 0x0f, 0xe1, 1, 0xf0, 0}
+	if m.noAudio {
+		pmt = pmt[:len(pmt)-5]
+		pmt[2] -= 5
+	}
 	return m.section(4096, pmt)
 }
 

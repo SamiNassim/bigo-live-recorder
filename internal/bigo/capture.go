@@ -1,0 +1,74 @@
+package bigo
+
+import (
+	"context"
+	"io"
+	"net/http"
+)
+
+// Capture separates reception from file lifetimes. Next is called after the
+// preceding part reaches EOF. Closing a part never closes the capture.
+type Capture interface {
+	Next(context.Context) (*CapturePart, error)
+	Close() error
+}
+
+type CapturePart struct {
+	io.ReadCloser
+	Reason string
+	Native bool
+}
+
+func (p *CapturePart) NativeTimestamps() bool { return p.Native }
+
+func OpenCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+	if source.native != nil {
+		capture, err := openNativeCapture(ctx, client, source, referer, recovery)
+		if err == nil {
+			return capture, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if source.URL() == "" {
+			return nil, err
+		}
+		if recovery.Report != nil {
+			recovery.Report("WARN", "Native media could not start; using the web stream: "+err.Error())
+		}
+	}
+	return openWebCapture(ctx, client, source, referer, recovery)
+}
+
+func openNativeCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+	return newNativeCaptureWithFallback(ctx, source, recovery, func(ctx context.Context, fresh Stream) (Capture, error) {
+		return openWebCapture(ctx, client, fresh, referer, recovery)
+	})
+}
+
+func openWebCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+	if recovery.Origin != nil {
+		return newFallbackCapture(ctx, client, source, referer, recovery, defaultFallbackPolicy(), func(ctx context.Context, fresh Stream) (Capture, error) {
+			return openNativeCapture(ctx, client, fresh, referer, recovery)
+		})
+	}
+	stream, err := openHLSStream(ctx, client, source, referer, recovery, defaultHLSPolicy(), true)
+	if err != nil {
+		return nil, err
+	}
+	return &singleCapture{stream: stream}, nil
+}
+
+type singleCapture struct {
+	stream io.ReadCloser
+	taken  bool
+}
+
+func (c *singleCapture) Next(context.Context) (*CapturePart, error) {
+	if c.taken {
+		return nil, io.EOF
+	}
+	c.taken = true
+	return &CapturePart{ReadCloser: c.stream}, nil
+}
+func (c *singleCapture) Close() error { return c.stream.Close() }

@@ -138,6 +138,28 @@ func TestNativeViewerSubscriptionAndCorrelatedReply(t *testing.T) {
 	if err = c.control(nativePacket{uri: 0x5a02, status: 200, data: reply}); err != nil || !c.confirmed {
 		t.Fatal("subscription was not confirmed")
 	}
+	// Repeated lists are acknowledged, but do not send another subscription.
+	previous := c.subscription
+	go func() { done <- c.control(nativePacket{uri: 0x36b702, status: 200, data: body}) }()
+	if ack, err := readNativePacket(server); err != nil || ack.uri != 0x36b802 {
+		t.Fatal("duplicate list was not acknowledged", err)
+	}
+	if err := <-done; err != nil || c.subscription != previous {
+		t.Fatal("duplicate list unnecessarily resubscribed", err)
+	}
+	// Availability changes reaffirm the requested source on the same socket,
+	// while the previous confirmed subscription remains usable.
+	body[20]++
+	go func() { done <- c.control(nativePacket{uri: 0x36b702, status: 200, data: body}) }()
+	if ack, err := readNativePacket(server); err != nil || ack.uri != 0x36b802 {
+		t.Fatal("changed list was not acknowledged", err)
+	}
+	if sub, err := readNativePacket(server); err != nil || sub.uri != 0x5902 {
+		t.Fatal("changed list did not resubscribe", err)
+	}
+	if err := <-done; err != nil || c.subscription <= previous || !c.confirmed {
+		t.Fatal("resubscription interrupted the active source", err)
+	}
 }
 
 func TestNativeLoginNegotiatesSourceModesWithoutDeviceIdentity(t *testing.T) {
