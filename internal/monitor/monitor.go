@@ -644,8 +644,6 @@ func (e *Engine) listen(ctx context.Context, id string, ch <-chan bigolistener.N
 						message = "Native live signal received; checking presence (recording paused)"
 					}
 					e.log.Write("INFO", id, message)
-				} else {
-					e.log.Write("DEBUG", id, "Unattributed native activity; verifying this subscription (not a confirmed live start)")
 				}
 			}
 			e.mu.Unlock()
