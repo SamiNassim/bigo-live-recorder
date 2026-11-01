@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 const MaxBytes int64 = 5 << 20
@@ -22,6 +24,7 @@ type Entry struct {
 	Level    string    `json:"level"`
 	Streamer string    `json:"streamer,omitempty"`
 	Message  string    `json:"message"`
+	Details  string    `json:"details,omitempty"`
 }
 type Log struct {
 	mu       sync.Mutex
@@ -82,13 +85,22 @@ func (l *Log) keep(e Entry) {
 	}
 }
 func (l *Log) Write(level, id, message string) {
+	l.WriteError(level, id, message, nil)
+}
+
+// WriteError keeps a readable message and a separate, bounded diagnostic cause.
+func (l *Log) WriteError(level, id, message string, cause error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sequence++
 	if len(message) > 16000 {
 		message = message[:16000] + " [truncated]"
 	}
-	e := Entry{l.sequence, time.Now(), level, id, message}
+	details := fault.Details(cause)
+	if len(details) > 16000 {
+		details = details[:16000] + " [truncated]"
+	}
+	e := Entry{Sequence: l.sequence, Time: time.Now(), Level: level, Streamer: id, Message: message, Details: details}
 	l.keep(e)
 	b, _ := json.Marshal(e)
 	b = append(b, '\n')

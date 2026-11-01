@@ -16,6 +16,7 @@ import (
 
 	"bigo-live-recorder/internal/assets"
 	"bigo-live-recorder/internal/bigo"
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/logging"
 	"bigo-live-recorder/internal/monitor"
 	"bigo-live-recorder/internal/recording"
@@ -132,7 +133,7 @@ func (a *application) refreshVisible() bool {
 		a.recordList.Key, a.recordList.CellMenu = nil, nil
 	}
 	if logRevision != a.logRevision && a.page != "logs" && a.logRowsCache.invalidate(a.logs) {
-		a.logList.Key = nil
+		a.logList.Key, a.logList.CellMenu = nil, nil
 	}
 	a.pruneAvatars()
 	sidebarChanged := listener != a.snapshot.Listener
@@ -284,6 +285,7 @@ func (a *application) updates() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var snapshot monitor.Snapshot
+	var maintenanceError string
 	dataRevision, logRevision := a.store.DataRevision(), a.log.Revision()
 	maintenance := time.NewTicker(5 * time.Second)
 	defer maintenance.Stop()
@@ -298,7 +300,12 @@ func (a *application) updates() {
 		case <-maintenance.C:
 			if !a.preview {
 				if _, err := a.store.PruneMissingRecordings(); err != nil {
-					a.log.Write("WARN", "recordings", "Reconcile deleted recordings: "+err.Error())
+					if detail := fault.Details(err); detail != maintenanceError {
+						a.log.WriteError("WARN", "recordings", "Could not refresh recording history after checking for deleted files: "+fault.Reason(err)+". The history list may be out of date; the app will retry automatically.", err)
+						maintenanceError = detail
+					}
+				} else {
+					maintenanceError = ""
 				}
 			}
 		case <-tick.C:
@@ -320,7 +327,7 @@ func (a *application) updates() {
 					n := mygo.NewNotification(mygo.NotificationOptions{Title: "Recording started", Body: event.Name + " is live. Your recording has started.", Group: "recordings"})
 					n.OnClick(func() { a.window.Show(); a.window.Focus(); a.page = "streamers"; a.window.Invalidate() })
 					if err := n.Show(); err != nil {
-						a.log.Write("WARN", "notifications", err.Error())
+						a.log.WriteError("WARN", "notifications", "Could not show the desktop notification: "+fault.Reason(err)+". Recording has started and is unaffected.", err)
 					}
 				}
 			})

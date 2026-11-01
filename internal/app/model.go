@@ -69,7 +69,7 @@ func filteredLogs(entries []logging.Entry, query, level string) []logging.Entry 
 		if level != "All levels" && e.Level != level {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(e.Streamer+" "+e.Message), query) {
+		if query != "" && !strings.Contains(strings.ToLower(e.Streamer+" "+e.Message+" "+e.Details), query) {
 			continue
 		}
 		out = append(out, e)

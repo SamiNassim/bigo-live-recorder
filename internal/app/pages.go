@@ -215,6 +215,10 @@ func (a *application) logsPage(c *ui.Context) {
 		entries := a.logRows()
 		a.logList.Key = func(i int) any { return entries[i].Sequence }
 		a.logList.KeepOffset = true
+		services := c.Services()
+		a.logList.CellMenu = func(m *ui.Menu, row, _ int) {
+			logMenu(m, entries[row], services)
+		}
 		ui.Table(c, &a.logList, []ui.TableColumn{{Title: "Time", Width: 150}, {Title: "Level", Width: 70}, {Title: "Streamer", Width: 140}, {Title: "Message", MinWidth: 200}}, len(entries), func(row, col int) {
 			e := entries[row]
 			switch col {
@@ -232,11 +236,11 @@ func (a *application) logsPage(c *ui.Context) {
 			case 2:
 				ui.Text(c, e.Streamer).FontSize(11).TextColor(t.TextMuted).SingleLine()
 			case 3:
-				ui.Text(c, e.Message).FontSize(12).MaxLines(4).Padding(12, 0).Selectable().Tooltip(e.Message)
+				ui.Text(c, e.Message).FontSize(12).MaxLines(4).Padding(12, 0).Selectable().Tooltip(e.Message).ContextMenu(func(m *ui.Menu) { logMenu(m, e, services) })
 			}
 		}).Grow(1).MinHeight(0).FillWidth()
 		ui.Divider(c)
-		ui.Text(c, fmt.Sprintf("%d matching · %d retained · newest first · disk logs rotate at 15 MB total", len(entries), len(a.logs))).Padding(14, 18).FontSize(11).TextColor(t.TextMuted)
+		ui.Text(c, fmt.Sprintf("%d matching · %d retained · newest first · right-click for details · disk logs rotate at 15 MB total", len(entries), len(a.logs))).Padding(14, 18).FontSize(11).TextColor(t.TextMuted)
 	})
 }
 
