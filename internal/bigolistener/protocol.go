@@ -81,6 +81,7 @@ type linkdClient struct {
 	writeGate     chan struct{}
 	seq           uint32
 	lastReceived  time.Time
+	nextPing      time.Time
 	session       Session
 
 	queryMu sync.Mutex
@@ -965,7 +966,9 @@ func (c *linkdClient) waitLiveEvent(ctx context.Context) (liveEvent, error) {
 		c.pendingEvents = c.pendingEvents[1:]
 		return event, nil
 	}
-	nextPing := time.Now().Add(linkdPingEvery)
+	if c.nextPing.IsZero() {
+		c.nextPing = time.Now().Add(linkdPingEvery)
+	}
 	if c.lastReceived.IsZero() {
 		c.lastReceived = time.Now()
 	}
@@ -973,12 +976,12 @@ func (c *linkdClient) waitLiveEvent(ctx context.Context) (liveEvent, error) {
 		if time.Since(c.lastReceived) >= linkdIdleTimeout {
 			return liveEvent{}, errors.New("BIGO connection stopped responding to heartbeats")
 		}
-		readFor := time.Until(nextPing)
+		readFor := time.Until(c.nextPing)
 		if readFor <= 0 {
 			if err := c.sendPing(); err != nil {
 				return liveEvent{}, err
 			}
-			nextPing = time.Now().Add(linkdPingEvery)
+			c.nextPing = time.Now().Add(linkdPingEvery)
 			continue
 		}
 		readCtx, cancelRead := context.WithTimeout(ctx, readFor)

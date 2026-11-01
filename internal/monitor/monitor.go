@@ -62,6 +62,7 @@ type item struct {
 	pending           bool
 	retryUntil        time.Time
 	lastSignal        time.Time
+	lastAttributed    time.Time
 	handle            activeRecording
 	recordCancel      context.CancelFunc
 	unsubscribe       func()
@@ -640,8 +641,12 @@ func (e *Engine) listen(ctx context.Context, id string, ch <-chan bigolistener.N
 			}
 			e.mu.Lock()
 			it := e.items[id]
-			if it != nil && (it.handle == nil || it.row.Streamer.RecordingPaused) && !it.row.Streamer.Paused && time.Since(it.lastSignal) > 30*time.Second {
+			if it != nil && (it.handle == nil || it.row.Streamer.RecordingPaused) && !it.row.Streamer.Paused &&
+				(time.Since(it.lastSignal) > 30*time.Second || n.Attributed && time.Since(it.lastAttributed) > 30*time.Second) {
 				it.lastSignal = time.Now()
+				if n.Attributed {
+					it.lastAttributed = it.lastSignal
+				}
 				it.pending = true
 				it.retryUntil = time.Now().Add(2 * time.Minute)
 				it.row.NextCheck = time.Now()
@@ -671,6 +676,7 @@ func (e *Engine) check(id string) {
 	bootstrap := !it.initial
 	presenceOnly := it.row.Streamer.RecordingPaused
 	target := it.row.Streamer
+	signalAtStart := it.lastSignal
 	e.mu.Unlock()
 	var stream bigo.Stream
 	var err error
@@ -769,8 +775,14 @@ func (e *Engine) check(id string) {
 	it.bootstrapFailures = 0
 	if stream.Alive != 1 {
 		it.row.Status = "Offline"
-		it.pending = false
-		it.retryUntil = time.Time{}
+		if it.pending && it.lastSignal.After(signalAtStart) {
+			// A newer signal arrived during this request. Its resolution
+			// must not be cleared by the older offline response.
+			it.row.NextCheck = time.Now()
+		} else {
+			it.pending = false
+			it.retryUntil = time.Time{}
+		}
 		return
 	}
 	if it.row.Streamer.RecordingPaused {

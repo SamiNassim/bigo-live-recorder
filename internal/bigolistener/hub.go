@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -523,6 +522,17 @@ func (h *Hub) connectAndListen(
 	}
 	h.drainWake()
 	announcedVersion := ^uint64(0)
+	var notices noticeRouter
+	defer func() {
+		// A disconnect must not strand an unresolved hint. Account changes
+		// and shutdown discard it instead of waking a different session.
+		if notices.unresolved() && ctx.Err() == nil {
+			latest, ready := h.snapshot()
+			if ready && latest.configKey == snapshot.configKey {
+				h.dispatch(noticeIdentity{})
+			}
+		}
+	}()
 	for {
 		forgetInactiveTargets(activeSnapshot.targets, followed, subscribed, rejected)
 		readyTargetCount, err := h.setupTargets(ctx, client, activeSnapshot.targets, followed, subscribed, rejected)
@@ -548,10 +558,17 @@ func (h *Hub) connectAndListen(
 			announcedVersion = activeSnapshot.version
 		}
 		h.setConnectedStatus(readyTargetCount, len(activeSnapshot.targets))
+		if notices.expire(time.Now()) {
+			h.dispatch(noticeIdentity{})
+		}
 
 		var waitCtx context.Context
 		var waitCancel context.CancelFunc
-		if retryAt, ok := nextTargetRetry(rejected); ok {
+		retryAt, _ := nextTargetRetry(rejected)
+		if deadline := notices.deadline(); !deadline.IsZero() && (retryAt.IsZero() || deadline.Before(retryAt)) {
+			retryAt = deadline
+		}
+		if !retryAt.IsZero() {
 			waitCtx, waitCancel = context.WithDeadline(ctx, retryAt)
 		} else {
 			waitCtx, waitCancel = context.WithCancel(ctx)
@@ -595,7 +612,9 @@ func (h *Hub) connectAndListen(
 			}
 			return err
 		}
-		h.dispatch(event)
+		if identity, ready := notices.accept(time.Now(), event); ready {
+			h.dispatch(identity)
+		}
 	}
 }
 
@@ -716,35 +735,32 @@ func (h *Hub) reportConnectionError(err error) {
 	}
 }
 
-func (h *Hub) dispatch(event liveEvent) {
-	payload := event.Content
-	for key, value := range event.Fields {
-		payload += "\n" + key + "=" + value
-	}
-
+func (h *Hub) dispatch(identity noticeIdentity) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	matched := make([]*watcher, 0, 1)
 	for _, w := range h.watchers {
-		if strings.Contains(payload, w.publicID) || strings.Contains(payload, strconv.FormatUint(uint64(w.targetUID), 10)) {
-			matched = append(matched, w)
+		if identity.uid != 0 && w.targetUID != identity.uid {
+			continue
 		}
-	}
-	// NewLive frames can be terse. An unattributed notification wakes all BIGO
-	// targets for a single on-demand lookup, without re-enabling polling.
-	if len(matched) == 0 {
-		for _, w := range h.watchers {
-			select {
-			case w.events <- Notification{Attributed: false}:
-			default:
-			}
+		if identity.uid == 0 && identity.publicID != "" && w.publicID != identity.publicID {
+			continue
 		}
-		return
-	}
-	for _, w := range matched {
+		notification := Notification{Attributed: identity.known()}
 		select {
-		case w.events <- Notification{Attributed: true}:
+		case w.events <- notification:
 		default:
+			if notification.Attributed {
+				// An identified alert takes precedence over a generic fallback
+				// still waiting for the monitor to consume its buffered signal.
+				select {
+				case <-w.events:
+				default:
+				}
+				select {
+				case w.events <- notification:
+				default:
+				}
+			}
 		}
 	}
 }

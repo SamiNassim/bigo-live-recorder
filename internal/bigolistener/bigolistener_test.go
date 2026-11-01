@@ -60,7 +60,7 @@ func (c *fakeHubClient) waitLiveEvent(context.Context) (liveEvent, error) {
 	return liveEvent{}, c.waitErr
 }
 
-func TestHubDispatchTargetsMatchingStreamerAndFansOutTerseEvents(t *testing.T) {
+func TestHubDispatchTargetsMatchingStreamerAndBroadcastsFallback(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := NewHub(ctx, testSessionSource, nil, nil)
@@ -80,7 +80,7 @@ func TestHubDispatchTargetsMatchingStreamerAndFansOutTerseEvents(t *testing.T) {
 	}
 	defer removeSecond()
 
-	hub.dispatch(liveEvent{URI: uriLiveStartNotify, Content: `{"uid":"222"}`})
+	hub.dispatch(noticeIdentity{uid: 222})
 	select {
 	case notification := <-second:
 		if !notification.Attributed {
@@ -95,7 +95,7 @@ func TestHubDispatchTargetsMatchingStreamerAndFansOutTerseEvents(t *testing.T) {
 	default:
 	}
 
-	hub.dispatch(liveEvent{URI: uriNewLiveNotify})
+	hub.dispatch(noticeIdentity{})
 	for name, events := range map[string]<-chan Notification{"first": first, "second": second} {
 		select {
 		case notification := <-events:
