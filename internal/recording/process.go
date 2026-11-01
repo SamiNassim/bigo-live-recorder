@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/state"
 )
@@ -95,14 +96,14 @@ func OutputArgs(raw string) ([]string, error) {
 func Process(parent context.Context, source string, cfg state.Config) (string, error) {
 	args, err := OutputArgs(cfg.FFmpegArgs)
 	if err != nil {
-		return "", err
+		return "", fault.Action("could not create the processed copy; check the custom FFmpeg output options. Original MKV kept", err)
 	}
 	path, err := ffmpeg.Find(cfg.FFmpegPath)
 	if err != nil {
-		return "", err
+		return "", fault.Action("could not create the processed copy; install or select FFmpeg in Settings. Original MKV kept", err)
 	}
 	if cfg.OutputExtension != "mp4" && cfg.OutputExtension != "mkv" && cfg.OutputExtension != "ts" {
-		return "", errors.New("invalid processed output format")
+		return "", fault.Action("could not create the processed copy; choose a supported output format in Settings. Original MKV kept", nil)
 	}
 	target := strings.TrimSuffix(source, filepath.Ext(source)) + ".processed." + cfg.OutputExtension
 	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
@@ -115,10 +116,10 @@ func Process(parent context.Context, source string, cfg state.Config) (string, e
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	if err = cmd.Run(); err != nil {
-		return "", errors.New("FFmpeg post-processing failed; the original MKV was kept. Check your output options and FFmpeg installation")
+		return "", processingFailure(ctx.Err(), err, stderr.String())
 	}
 	if info, err := os.Stat(target); err != nil || info.Size() == 0 {
-		return "", errors.New("FFmpeg produced no processed copy; the original MKV was kept")
+		return "", fault.Action("FFmpeg produced no processed copy; original MKV kept", err)
 	}
 	return target, nil
 }

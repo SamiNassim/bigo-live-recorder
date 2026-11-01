@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/bigo"
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/state"
 )
 
@@ -67,7 +67,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	}
 	path := recordingPath(s, cfg, stamp, hex.EncodeToString(suffix[:]))
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, fmt.Errorf("create recording folder: %w", err)
+		return nil, fault.Action("could not create the recording folder; check disk space and folder permissions", err)
 	}
 	cmd := exec.Command(ffmpeg, recordingArgs(part, path)...)
 	configureCommand(cmd)
@@ -79,7 +79,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	cmd.Stderr = stderr
 	if err = cmd.Start(); err != nil {
 		stdin.Close()
-		return nil, fmt.Errorf("start FFmpeg: %w", err)
+		return nil, fault.Action("FFmpeg could not start; check its installation in Settings", err)
 	}
 	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr}
 	go func() { _, err := io.Copy(stdin, part); stdin.Close(); part.Close(); f.copied <- err }()
@@ -90,7 +90,11 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
 	var err error
 	if waitErr != nil {
-		err = fmt.Errorf("FFmpeg: %w: %s", waitErr, f.stderr.String())
+		cause := ffmpegCause(waitErr, f.stderr.String())
+		if !canceled && copyErr != nil {
+			cause = errors.Join(copyErr, cause)
+		}
+		err = fault.Action(ffmpegMessage("finalize the recording", f.stderr.String()), cause)
 	} else if !canceled {
 		err = copyErr
 	}
@@ -99,7 +103,7 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
 		size = info.Size()
 	}
 	if size == 0 && err == nil {
-		err = errors.New("FFmpeg produced no media")
+		err = fault.Action("FFmpeg produced no saved media", errors.New("recording file is empty or missing"))
 	}
 	return Result{Path: f.path, Bytes: size, EndedAt: time.Now(), Err: err}
 }

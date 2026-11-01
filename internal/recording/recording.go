@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"bigo-live-recorder/internal/bigo"
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/state"
 )
@@ -53,7 +54,7 @@ func FindFFmpeg(configured string) (string, error) {
 func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg state.Config, recovery bigo.StreamRecovery) (*Handle, error) {
 	ffmpeg, err := FindFFmpeg(cfg.FFmpegPath)
 	if err != nil {
-		return nil, err
+		return nil, fault.Action("FFmpeg was not found; install or select it in Settings", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
 	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)

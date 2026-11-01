@@ -1,6 +1,9 @@
 package monitor
 
-import "bigo-live-recorder/internal/state"
+import (
+	"bigo-live-recorder/internal/fault"
+	"bigo-live-recorder/internal/state"
+)
 
 // processCopy runs independently of the discovery queue and the raw recorder.
 // Limit concurrent converters; shutdown cancels both running and queued jobs.
@@ -32,7 +35,11 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 			}
 		})
 		if err != nil {
-			e.log.Write("WARN", id, err.Error())
+			level := "WARN"
+			if fault.RequiresAction(err) {
+				level = "ERROR"
+			}
+			e.log.WriteError(level, id, "Processed copy failed: "+fault.Reason(err), err)
 		} else {
 			e.log.Write("INFO", id, "Processed copy ready; original MKV kept")
 		}
