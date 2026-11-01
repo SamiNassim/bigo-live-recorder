@@ -63,7 +63,7 @@ func (c *fakeHubClient) waitLiveEvent(context.Context) (liveEvent, error) {
 func TestHubDispatchTargetsMatchingStreamerAndBroadcastsFallback(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	hub := NewHub(ctx, testSessionSource, nil, nil)
+	hub := NewHub(ctx, testSessionSource, nil, nil, nil)
 	defer func() {
 		cancel()
 		hub.Close()
@@ -145,7 +145,7 @@ func TestConfigureKeepsNativeModeSelectedWhenSessionIsUnusable(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	warnings := make([]string, 0, 1)
-	hub := NewHub(ctx, testSessionSource, nil, func(message string) { warnings = append(warnings, message) })
+	hub := NewHub(ctx, testSessionSource, nil, func(message string) { warnings = append(warnings, message) }, nil)
 	defer func() {
 		cancel()
 		hub.Close()
@@ -383,8 +383,8 @@ func TestHubIsolatesRejectedTargetAndRetainsConfirmedSetup(t *testing.T) {
 	if !followed[222] || !subscribed[222] || rejected[111].err == nil {
 		t.Fatalf("state followed=%v subscribed=%v rejected=%v", followed, subscribed, rejected)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "polling remains disabled") {
-		t.Fatalf("warnings=%v, want explicit push-only fallback warning", warnings)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Retrying this subscription in 30s") || strings.Contains(warnings[0], "polling") {
+		t.Fatalf("warnings=%v, want subscription retry without assuming polling settings", warnings)
 	}
 
 	secondClient := &fakeHubClient{rejectFollow: make(map[uint32]error)}
@@ -526,7 +526,7 @@ func TestCookieChangeCancelsCredentialBootstrap(t *testing.T) {
 		<-ctx.Done()
 		close(stopped)
 		return Session{}, ctx.Err()
-	}, nil, nil)
+	}, nil, nil, nil)
 	defer hub.Close()
 	hub.Configure(true, "first-cookie", "device")
 	_, unsubscribe, err := hub.Subscribe("target", 123)

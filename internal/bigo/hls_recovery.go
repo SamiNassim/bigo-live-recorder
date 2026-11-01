@@ -2,11 +2,13 @@ package bigo
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 // StreamRecovery supplies authenticated playback refresh and URL-free logging.
@@ -15,11 +17,21 @@ import (
 type StreamRecovery struct {
 	Refresh func(context.Context) (Stream, error)
 	Report  func(level, message string)
+	// ReportError stores an optional diagnostic cause separately from the text.
+	ReportError func(level, message string, cause error)
 	// Origin retries native playback only while a web fallback is in use. It
 	// must use the existing room and shared messaging login, without polling
 	// web presence or playback APIs.
 	Origin  func(context.Context, Stream) (Stream, error)
 	stopHLS func() bool
+}
+
+func (r StreamRecovery) reportError(level, message string, cause error) {
+	if r.ReportError != nil {
+		r.ReportError(level, message, cause)
+	} else if r.Report != nil {
+		r.Report(level, message)
+	}
 }
 
 type hlsPolicy struct {
@@ -45,6 +57,7 @@ type hlsReader struct {
 	lastProgress, nextRefresh  time.Time
 	refreshAttempts            int
 	failedSources              map[string]time.Time
+	lastFailure                error
 }
 
 func (r *hlsReader) report(level, message string) {
@@ -53,10 +66,13 @@ func (r *hlsReader) report(level, message string) {
 	}
 }
 
-func (r *hlsReader) beginRecovery(reason string) {
+func (r *hlsReader) beginRecovery(reason string, cause error) {
+	if cause != nil {
+		r.lastFailure = cause
+	}
 	if !r.recovering {
 		r.recovering = true
-		r.report("WARN", reason+"; recovering sources inside the current recording")
+		r.recovery.reportError("WARN", reason+". Attempting to restore web playback while keeping the recording open.", cause)
 	}
 }
 
@@ -93,7 +109,7 @@ func (r *hlsReader) read(ctx context.Context) error {
 					return err
 				}
 				r.failSource()
-				r.beginRecovery("HLS segment download failed")
+				r.beginRecovery("Could not download the next part of the web stream: "+fault.Reason(err), err)
 				break
 			}
 			if n, err := r.output.Write(media); err != nil {
@@ -108,6 +124,7 @@ func (r *hlsReader) read(ctx context.Context) error {
 				r.recovering = false
 				r.refreshAttempts = 0
 				r.nextRefresh = time.Time{}
+				r.lastFailure = nil
 				clear(r.failedSources)
 			}
 		}
@@ -122,10 +139,10 @@ func (r *hlsReader) read(ctx context.Context) error {
 			r.report("INFO", "HLS playlist end marker received; verifying whether the broadcast ended")
 		}
 		if time.Since(r.lastProgress) >= r.policy.maxStall {
-			return errors.New("BIGO playback recovery exhausted after two minutes without new media")
+			return fault.Wrap(fmt.Sprintf("web stream recovery exhausted after %s without new media", r.policy.maxStall), r.lastFailure)
 		}
 		if time.Since(r.lastProgress) >= r.policy.stallAfter {
-			r.beginRecovery("HLS playlist stopped advancing")
+			r.beginRecovery("The web stream has supplied no new media for "+r.policy.stallAfter.String(), nil)
 		}
 		if r.recovering {
 			loaded, ended := r.recover(ctx)
@@ -159,7 +176,7 @@ func (r *hlsReader) read(ctx context.Context) error {
 				return err
 			}
 			r.failSource()
-			r.beginRecovery("HLS playlist request failed")
+			r.beginRecovery("Could not update the web stream playlist: "+fault.Reason(err), err)
 			r.playlist.segments = nil
 		} else {
 			r.playlist, r.mediaURL = playlist, mediaURL
@@ -196,6 +213,7 @@ func (r *hlsReader) trySources(ctx context.Context) bool {
 		cancel()
 		cancelDeadline()
 		if err != nil {
+			r.lastFailure = err
 			continue
 		}
 		segments := r.cursor.fresh(playlist, mediaURL)
@@ -229,7 +247,8 @@ func (r *hlsReader) recover(ctx context.Context) (loaded, ended bool) {
 		if ctx.Err() != nil {
 			return false, false
 		}
-		r.report("WARN", "BIGO playback refresh failed; retrying media sources without closing the recording")
+		r.lastFailure = err
+		r.recovery.reportError("WARN", "Could not refresh the web stream: "+fault.Reason(err)+". Retrying media sources while keeping the recording open.", err)
 		return false, false
 	}
 	if current.Alive == 1 && current.RoomID != "" && r.source.RoomID != "" && current.RoomID != r.source.RoomID {
@@ -237,6 +256,7 @@ func (r *hlsReader) recover(ctx context.Context) (loaded, ended bool) {
 		return false, true
 	}
 	if current.Alive != 1 && r.playlist.end {
+		r.report("INFO", "BIGO reports this broadcast ended; finalizing the recording")
 		return false, true
 	}
 	if current.Alive != 1 || len(current.URLs()) == 0 {

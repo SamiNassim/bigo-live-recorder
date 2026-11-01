@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 func openNativeRecoveringStream(parent context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (io.ReadCloser, error) {
@@ -20,15 +22,13 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 		if source.URL() == "" {
 			return nil, err
 		}
-		if recovery.Report != nil {
-			recovery.Report("WARN", "Native media could not start; using the web stream: "+err.Error())
-		}
+		recovery.reportError("WARN", "Native media could not start: "+fault.Reason(err)+". Trying the web stream instead.", err)
 		source.native = nil
 		source.Quality = "web"
 		return openHLSStream(parent, client, source, referer, recovery, defaultHLSPolicy(), true)
 	}
 	if recovery.Report != nil {
-		recovery.Report("INFO", "Native Origin video and audio connected")
+		recovery.Report("INFO", "Native video and audio connected (Origin requested)")
 	}
 	reader, writer := io.Pipe()
 	done := make(chan struct{})
@@ -58,9 +58,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 				writer.CloseWithError(err)
 				return
 			}
-			if recovery.Report != nil {
-				recovery.Report("WARN", "Native media disconnected; recovering inside the current recording: "+err.Error())
-			}
+			recovery.reportError("WARN", "Stream data stopped arriving: "+fault.Reason(err)+". Attempting to reconnect while keeping the recording open.", err)
 			recovered := false
 			for attempt := 0; attempt < 3; attempt++ {
 				if attempt > 0 {
@@ -94,7 +92,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 				}
 			}
 			if !recovered {
-				writer.CloseWithError(errors.Join(errors.New("BIGO native media recovery exhausted"), err))
+				writer.CloseWithError(fault.Wrap("could not restore the native stream after 3 attempts: "+fault.Reason(err), err))
 				return
 			}
 			if recovery.Report != nil {

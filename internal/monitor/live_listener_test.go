@@ -44,7 +44,7 @@ func TestLiveCookieListener(t *testing.T) {
 	e := &Engine{client: client}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second+wait)
 	defer cancel()
-	hub := bigolistener.NewHub(ctx, e.messagingSession, func(v string) { t.Log(v) }, func(v string) { t.Log(v) })
+	hub := bigolistener.NewHub(ctx, e.messagingSession, func(v string) { t.Log(v) }, func(v string) { t.Log(v) }, nil)
 	defer hub.Close()
 	hub.Configure(true, cookie, state.Defaults().NativeDeviceID)
 	notifications, unsubscribe, err := hub.Subscribe(publicID, uint32(uid))

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 const (
@@ -293,13 +295,13 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 	video, err := dialNativeMedia(setupCtx, channel.video, channel.source, channel.sid, true)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, fault.Wrap("could not connect to BIGO's native video server: "+fault.Reason(err), err)
 	}
 	audio, err := dialNativeMedia(setupCtx, channel.media, channel.source, channel.sid, false)
 	if err != nil {
 		video.Close()
 		cancel()
-		return nil, err
+		return nil, fault.Wrap("could not connect to BIGO's native audio server: "+fault.Reason(err), err)
 	}
 	audio.report = report
 	video.report = report
@@ -311,7 +313,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 	}
 	if err != nil {
 		cleanup()
-		return nil, err
+		return nil, fault.Wrap("could not send the native stream setup request: "+fault.Reason(err), err)
 	}
 	events := make(chan nativeMediaFrame, 128)
 	failed := make(chan error, 2)
@@ -352,13 +354,20 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 	for first == nil || !audioReady {
 		select {
 		case <-setupCtx.Done():
+			message := "timed out waiting for the first playable native video frame"
+			if first != nil {
+				message = "timed out waiting for native audio to start alongside the video"
+			}
+			if parent.Err() != nil {
+				message = "native stream setup was interrupted"
+			}
 			cleanup()
 			workers.Wait()
-			return nil, setupCtx.Err()
+			return nil, fault.Wrap(message, setupCtx.Err())
 		case err := <-failed:
 			cleanup()
 			workers.Wait()
-			return nil, err
+			return nil, fault.Wrap("native stream setup failed: "+fault.Reason(err), err)
 		case f := <-events:
 			if f.video && f.key && first == nil {
 				if _, err := nativeVideoType(f.codec); err != nil {
@@ -377,7 +386,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 					if delta > 10000 {
 						cleanup()
 						workers.Wait()
-						return nil, errors.New("BIGO native audio and video startup clocks diverged")
+						return nil, fault.Wrap("BIGO's native audio and video could not be synchronized at startup", errors.New("BIGO native audio and video startup clocks diverged"))
 					}
 					audioReady = true
 				}
@@ -386,7 +395,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 			if len(waiting) > 128 {
 				cleanup()
 				workers.Wait()
-				return nil, errors.New("BIGO native audio did not start")
+				return nil, fault.Wrap("native video arrived, but playable audio did not start", errors.New("BIGO native startup audio buffer exceeded 128 frames"))
 			}
 		}
 	}
@@ -445,10 +454,18 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 		}
 		packet, err := readNativePacket(c.Conn)
 		if err != nil {
-			if invalidAudio != nil {
-				return fmt.Errorf("BIGO native audio did not resume after malformed AAC: %w", errors.Join(err, invalidAudio))
+			track := "audio"
+			if c.video {
+				track = "video"
 			}
-			return err
+			if invalidAudio != nil {
+				return fault.Wrap("playable native audio stopped arriving", errors.Join(err, invalidAudio))
+			}
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				return fault.Wrap("no playable native "+track+" arrived for 20 seconds", err)
+			}
+			return fault.Wrap("the native "+track+" connection was interrupted: "+fault.Reason(err), err)
 		}
 		var frames []nativeMediaFrame
 		if c.video && packet.uri == 5 {
@@ -457,11 +474,11 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 			}
 			p, e := decodeNativeVideo(packet.data)
 			if e != nil {
-				return e
+				return fault.Wrap("BIGO sent unreadable native video data", e)
 			}
 			frames, e = router.add(p)
 			if e != nil {
-				return e
+				return fault.Wrap("native video fragments could not be assembled into playable frames", e)
 			}
 		} else if !c.video && packet.uri == 2 {
 			frames, err = decodeNativeAudio(packet.data)
@@ -471,10 +488,10 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 				// continuing invalid stream still hits the media deadline, which
 				// advances only when usable audio is delivered.
 			} else if err != nil {
-				return err
+				return fault.Wrap("BIGO sent unreadable native audio data", err)
 			}
 		} else if err = c.control(packet); err != nil {
-			return err
+			return fault.Wrap("BIGO could not maintain the native media subscription", err)
 		}
 		for _, f := range frames {
 			lastMedia = time.Now()

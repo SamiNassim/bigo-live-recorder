@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 // Capture separates reception from file lifetimes. Next is called after the
@@ -33,9 +35,7 @@ func OpenCapture(ctx context.Context, client *http.Client, source Stream, refere
 		if source.URL() == "" {
 			return nil, err
 		}
-		if recovery.Report != nil {
-			recovery.Report("WARN", "Native media could not start; using the web stream: "+err.Error())
-		}
+		recovery.reportError("WARN", "Native media could not start: "+fault.Reason(err)+". Trying the web stream instead.", err)
 	}
 	return openWebCapture(ctx, client, source, referer, recovery)
 }

@@ -142,7 +142,7 @@ func TestNoticeCacheCapacityKeepsFallbackAndBoundsMemory(t *testing.T) {
 }
 
 func TestIdentifiedUnmonitoredNoticeDoesNotWakeWatchers(t *testing.T) {
-	h := NewHub(context.Background(), nil, nil, nil)
+	h := NewHub(context.Background(), nil, nil, nil, nil)
 	defer h.Close()
 	events, off, err := h.Subscribe("public-one", 111)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestIdentifiedUnmonitoredNoticeDoesNotWakeWatchers(t *testing.T) {
 }
 
 func TestIdentifiedNoticeUpgradesBufferedFallback(t *testing.T) {
-	h := NewHub(context.Background(), nil, nil, nil)
+	h := NewHub(context.Background(), nil, nil, nil, nil)
 	defer h.Close()
 	events, off, err := h.Subscribe("public-one", 111)
 	if err != nil {

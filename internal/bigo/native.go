@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/bigolistener"
+	"bigo-live-recorder/internal/fault"
 )
 
 const (
@@ -57,11 +58,11 @@ func (c *Client) OriginStream(ctx context.Context, source Stream, hub *bigoliste
 	sequence := nextPJoinSeq()
 	body, err := queryMediaChannel(queryCtx, hub, sequence, sid)
 	if err != nil {
-		return Stream{}, fmt.Errorf("query BIGO media channel: %w", err)
+		return Stream{}, fault.Wrap("could not obtain the native stream source: "+fault.Reason(err), err)
 	}
 	response, err := unmarshalPJoinChannelRes(body)
 	if err != nil {
-		return Stream{}, fmt.Errorf("decode BIGO media channel: %w", err)
+		return Stream{}, fault.Wrap("BIGO returned unreadable native stream connection details", err)
 	}
 	if response.code != 200 {
 		return Stream{}, fmt.Errorf("BIGO media channel rejected: code=%d", response.code)

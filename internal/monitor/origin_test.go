@@ -193,7 +193,7 @@ func TestResolvedUIDSubscribesBeforeRecordingStarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	e := &Engine{store: store, log: log, client: &fakeClient{}, ctx: ctx, cancel: cancel, events: make(chan Event, 1), wake: make(chan struct{}, 1), items: map[string]*item{"test": {row: Row{Streamer: store.Data().Streamers[0]}}}}
-	e.hub = bigolistener.NewHub(ctx, e.messagingSession, nil, nil)
+	e.hub = bigolistener.NewHub(ctx, e.messagingSession, nil, nil, nil)
 	defer e.hub.Close()
 	e.configure(cfg)
 	handle := &fakeRecording{done: make(chan struct{}), started: time.Now()}

@@ -3,10 +3,16 @@ package bigo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
+
+const nativeRecoveryAttempts = 3
+const nativeRecoveryDelay = 5 * time.Second
 
 type nativeCapture struct {
 	ctx               context.Context
@@ -121,13 +127,17 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			c.queue.finish(err)
 			return
 		}
-		if c.recovery.Report != nil {
-			c.recovery.Report("WARN", "Native media disconnected; recovering inside the current recording: "+err.Error())
-		}
+		c.recovery.reportError("WARN", "Stream data stopped arriving: "+fault.Reason(err)+". Attempting to reconnect while keeping the recording open.", err)
 		session.Close()
 		recovered := false
-		for attempt := 0; attempt < 3; attempt++ {
-			if attempt > 0 && waitHLS(c.ctx, 5*time.Second) != nil {
+		for attempt := 0; attempt < nativeRecoveryAttempts; attempt++ {
+			if c.ctx.Err() != nil {
+				break
+			}
+			if attempt > 0 {
+				c.recovery.reportError("WARN", fmt.Sprintf("Could not reconnect to the stream: %s. Retrying in %s (attempt %d of %d).", fault.Reason(err), nativeRecoveryDelay, attempt+1, nativeRecoveryAttempts), err)
+			}
+			if attempt > 0 && waitHLS(c.ctx, nativeRecoveryDelay) != nil {
 				break
 			}
 			ctx, cancel := context.WithTimeout(c.ctx, 25*time.Second)
@@ -138,6 +148,13 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				continue
 			}
 			if fresh.Alive != 1 || (fresh.UID != 0 && source.UID != 0 && fresh.UID != source.UID) || (fresh.RoomID != "" && source.RoomID != "" && fresh.RoomID != source.RoomID) {
+				if c.recovery.Report != nil {
+					message := "BIGO reports a different broadcast; finalizing the previous recording"
+					if fresh.Alive != 1 {
+						message = "BIGO reports this broadcast ended; finalizing the recording"
+					}
+					c.recovery.Report("INFO", message)
+				}
 				c.queue.finish(nil)
 				return
 			}
@@ -174,7 +191,11 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			break
 		}
 		if !recovered {
-			c.queue.finish(errors.Join(errors.New("BIGO native media recovery exhausted"), err))
+			if c.ctx.Err() != nil {
+				c.queue.finish(c.ctx.Err())
+			} else {
+				c.queue.finish(fault.Wrap(fmt.Sprintf("could not restore the native stream after %d attempts: %s", nativeRecoveryAttempts, fault.Reason(err)), err))
+			}
 			return
 		}
 		if c.recovery.Report != nil {

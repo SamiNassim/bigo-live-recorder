@@ -32,6 +32,11 @@ func TestWorkerReconnectsAfterInterruptedConnection(t *testing.T) {
 					return validTestSession(), nil
 				},
 				warning: func(string) { warnings <- struct{}{} },
+				info: func(message string) {
+					if strings.Contains(message, "connection restarting") {
+						warnings <- struct{}{}
+					}
+				},
 			}
 			h.dial = func(ctx context.Context, _ Session) (hubClient, string, error) {
 				if err := ctx.Err(); err != nil {
@@ -79,7 +84,7 @@ func (c *recoveredHubClient) waitLiveEvent(ctx context.Context) (liveEvent, erro
 }
 
 func TestRemovingLastTargetDoesNotLeaveRetryingStatus(t *testing.T) {
-	h := NewHub(context.Background(), testSessionSource, nil, nil)
+	h := NewHub(context.Background(), testSessionSource, nil, nil, nil)
 	defer h.Close()
 	h.Configure(true, "cookie", "device")
 	_, off, err := h.Subscribe("test", 123)

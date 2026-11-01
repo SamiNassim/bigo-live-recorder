@@ -22,7 +22,7 @@ func TestSnapshotReusesRowsUntilObservableStateChanges(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hub := bigolistener.NewHub(ctx, nil, func(string) {}, func(string) {})
+	hub := bigolistener.NewHub(ctx, nil, func(string) {}, func(string) {}, nil)
 	defer hub.Close()
 	e := &Engine{store: store, hub: hub, items: map[string]*item{}}
 

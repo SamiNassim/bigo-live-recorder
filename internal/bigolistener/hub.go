@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 const (
@@ -105,12 +108,13 @@ type Hub struct {
 
 	info    func(string)
 	warning func(string)
+	failure func(string, error)
 	wg      sync.WaitGroup
 }
 
 // NewHub starts a dormant shared listener. Source is invoked only when a
 // connection is needed; every monitored target uses that same connection.
-func NewHub(parent context.Context, source SessionSource, info, warning func(string)) *Hub {
+func NewHub(parent context.Context, source SessionSource, info, warning func(string), failure func(string, error)) *Hub {
 	ctx, cancel := context.WithCancel(parent)
 	h := &Hub{
 		ctx: ctx, cancel: cancel,
@@ -119,6 +123,7 @@ func NewHub(parent context.Context, source SessionSource, info, warning func(str
 		wake:     make(chan struct{}, 1),
 		info:     info,
 		warning:  warning,
+		failure:  failure,
 		status: RuntimeStatus{
 			State:   "initializing",
 			Message: "Initializing the BIGO native listener.",
@@ -246,7 +251,7 @@ func (h *Hub) Configure(enabled bool, cookie, deviceID string) bool {
 	default:
 		h.status = RuntimeStatus{
 			State:        "connecting",
-			Message:      "Connecting to BIGO Linkd.",
+			Message:      "Connecting to BIGO live notifications.",
 			TotalTargets: h.uniqueTargetCountLocked(),
 		}
 	}
@@ -403,7 +408,7 @@ func (h *Hub) run() {
 		forgetInactiveTargets(snapshot.targets, followed, subscribed, rejected)
 		h.setStatus(RuntimeStatus{
 			State:        "connecting",
-			Message:      "Connecting to BIGO Linkd.",
+			Message:      "Connecting to BIGO live notifications.",
 			TotalTargets: len(snapshot.targets),
 		})
 
@@ -495,7 +500,7 @@ func (h *Hub) connectAndListen(
 		return errHubReconfigured
 	}
 	dialCtx, cancelDial := context.WithTimeout(ctx, hubBootstrapTimeout)
-	client, endpoint, err := h.dial(dialCtx, session)
+	client, _, err := h.dial(dialCtx, session)
 	cancelDial()
 	if err != nil {
 		return err
@@ -554,7 +559,7 @@ func (h *Hub) connectAndListen(
 		h.lastError = ""
 		h.mu.Unlock()
 		if announcedVersion != activeSnapshot.version && h.info != nil {
-			h.info(fmt.Sprintf("BIGO native listener active for %d/%d streamer(s) via %s", readyTargetCount, len(activeSnapshot.targets), endpoint))
+			h.info(subscriptionMessage(readyTargetCount, len(activeSnapshot.targets)))
 			announcedVersion = activeSnapshot.version
 		}
 		h.setConnectedStatus(readyTargetCount, len(activeSnapshot.targets))
@@ -626,18 +631,31 @@ func (h *Hub) setStatus(status RuntimeStatus) {
 
 func (h *Hub) setConnectedStatus(ready, total int) {
 	status := RuntimeStatus{Connected: true, ReadyTargets: ready, TotalTargets: total}
+	status.Message = subscriptionMessage(ready, total)
 	switch {
 	case total > 0 && ready == total:
 		status.State = "connected"
-		status.Message = fmt.Sprintf("Listening for live notifications for %d BIGO streamer(s).", total)
 	case ready > 0:
 		status.State = "partial"
-		status.Message = fmt.Sprintf("Linkd is connected; %d of %d stream subscriptions are active. The remaining target(s) will retry natively.", ready, total)
 	default:
 		status.State = "unavailable"
-		status.Message = "Linkd is connected, but no stream subscriptions are active. Targets will retry natively."
 	}
 	h.setStatus(status)
+}
+
+func subscriptionMessage(ready, total int) string {
+	if total > 0 && ready == total {
+		return fmt.Sprintf("Listening for live notifications for %d BIGO streamer(s).", total)
+	}
+	return fmt.Sprintf("Live-notification connection established; %d/%d subscriptions ready. Remaining subscriptions will retry automatically.", ready, total)
+}
+
+func (h *Hub) warn(message string, err error) {
+	if h.failure != nil {
+		h.failure(message, err)
+	} else if h.warning != nil {
+		h.warning(message)
+	}
 }
 
 func (h *Hub) clearWaitCancel() {
@@ -699,9 +717,7 @@ func (h *Hub) rejectTarget(target target, err error, rejected map[uint32]targetR
 		}
 	}
 	rejected[target.uid] = targetRejection{err: err, retryAt: time.Now().Add(delay), delay: delay}
-	if h.warning != nil {
-		h.warning(fmt.Sprintf("BIGO native subscription unavailable for %s; retrying natively in %s, and polling remains disabled while native mode is selected: %v", target.publicID, delay, err))
-	}
+	h.warn(fmt.Sprintf("BIGO rejected the live-notification subscription for %s. Retrying this subscription in %s; the listener connection remains open.", target.publicID, delay), err)
 	return true
 }
 
@@ -719,19 +735,29 @@ func (h *Hub) reportConnectionError(err error) {
 	if err == nil || h.ctx.Err() != nil {
 		return
 	}
-	message := err.Error()
+	message := "Live-notification connection interrupted: " + fault.Reason(err) + ". Reconnecting automatically."
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		message = "The live-notification connection closed. Reconnecting automatically."
+	}
+	// Local reconfiguration cancels its connection intentionally. It must not
+	// leave the UI displaying a failure that the user needs to fix.
+	if errors.Is(err, context.Canceled) {
+		message = "Live-notification connection restarting. Reconnecting automatically."
+	}
 	h.mu.Lock()
 	repeated := message == h.lastError
 	h.lastError = message
 	h.status = RuntimeStatus{
 		State:        "retrying",
-		Message:      "Linkd disconnected; reconnecting: " + message,
+		Message:      message,
 		ReadyTargets: 0,
 		TotalTargets: h.uniqueTargetCountLocked(),
 	}
 	h.mu.Unlock()
-	if !repeated && h.warning != nil {
-		h.warning("BIGO native listener disconnected; reconnecting: " + message)
+	if !repeated && !errors.Is(err, context.Canceled) {
+		h.warn(message, err)
+	} else if !repeated && h.info != nil {
+		h.info(message)
 	}
 }
 

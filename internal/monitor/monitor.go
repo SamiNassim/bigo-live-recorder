@@ -14,6 +14,7 @@ import (
 
 	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/bigolistener"
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/logging"
 	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
@@ -96,7 +97,7 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64), processing: make(chan struct{}, 2), process: recording.Process}
 	e.recoverHistory()
-	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) })
+	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) }, func(s string, err error) { log.WriteError("WARN", "listener", s, err) })
 	e.configure(store.Config())
 	if e.start == nil {
 		e.start = e.startRecording
@@ -117,7 +118,8 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 		Refresh: func(ctx context.Context) (bigo.Stream, error) {
 			return e.refreshPlayback(ctx, streamer, cfg)
 		},
-		Report: func(level, message string) { e.log.Write(level, streamer.ID, message) },
+		Report:      func(level, message string) { e.log.Write(level, streamer.ID, message) },
+		ReportError: func(level, message string, err error) { e.log.WriteError(level, streamer.ID, message, err) },
 	}
 	if e.wantsNative(streamer, cfg) {
 		recovery.Origin = func(ctx context.Context, current bigo.Stream) (bigo.Stream, error) {
@@ -196,7 +198,7 @@ func (e *Engine) playbackSource(ctx context.Context, streamer state.Streamer, so
 	if webErr != nil || source.URL() == "" {
 		return source, errors.Join(webErr, err)
 	}
-	e.log.Write("WARN", streamer.ID, "Native media source unavailable; using the web stream: "+err.Error())
+	e.log.WriteError("WARN", streamer.ID, "Native media source unavailable: "+fault.Reason(err)+". Trying the web stream instead.", err)
 	return source, nil
 }
 
@@ -748,10 +750,8 @@ func (e *Engine) check(id string) {
 		it.row.LiveCheckedAt = time.Now()
 	}
 	if err != nil {
-		if it.row.Error != err.Error() {
-			e.log.Write("WARN", id, err.Error())
-		}
-		it.row.Error = err.Error()
+		previousError := it.row.Error
+		it.row.Error = "Could not check this stream: " + fault.Reason(err)
 		it.row.Status = "Needs attention"
 		if bootstrap && !errors.Is(err, bigo.ErrLoginRequired) && !errors.Is(err, bigo.ErrURLWithheld) {
 			it.bootstrapFailures++
@@ -768,6 +768,9 @@ func (e *Engine) check(id string) {
 		it.pending = it.pending && time.Now().Before(it.retryUntil)
 		if it.pending {
 			it.row.NextCheck = time.Now().Add(15 * time.Second)
+		}
+		if previousError != it.row.Error {
+			e.log.WriteError("WARN", id, it.row.Error+". "+retryMessage(cfg, it), err)
 		}
 		return
 	}
@@ -817,14 +820,18 @@ func (e *Engine) check(id string) {
 			return
 		}
 		it.row.Status = "Needs attention"
-		it.row.Error = startErr.Error()
-		e.log.Write("ERROR", id, startErr.Error())
+		it.row.Error = "Could not start recording: " + fault.Reason(startErr)
 		if it.retryUntil.IsZero() {
 			it.retryUntil = time.Now().Add(2 * time.Minute)
 			it.pending = true
 		}
 		it.pending = it.pending && time.Now().Before(it.retryUntil)
 		it.row.NextCheck = time.Now().Add(15 * time.Second)
+		level := "WARN"
+		if fault.RequiresAction(startErr) {
+			level = "ERROR"
+		}
+		e.log.WriteError(level, id, it.row.Error+". "+retryMessage(cfg, it), startErr)
 		return
 	}
 	it.handle = h
@@ -877,8 +884,12 @@ func (e *Engine) completed(it *item) {
 		}
 	})
 	if r.Err != nil {
-		it.row.Error = r.Err.Error()
-		e.log.Write("WARN", it.row.Streamer.ID, "Recording ended: "+r.Err.Error())
+		it.row.Error = fault.Reason(r.Err)
+		level, message := recordingFailure(r, false)
+		if e.ctx.Err() == nil && !it.row.Streamer.Paused {
+			message += " Monitoring will continue."
+		}
+		e.log.WriteError(level, it.row.Streamer.ID, message, r.Err)
 	} else {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
 	}
@@ -940,7 +951,8 @@ func (e *Engine) fileChanges(it *item) {
 	for _, change := range changes {
 		if r := change.Result; r != nil {
 			if r.Err != nil {
-				e.log.Write("WARN", id, "Recording file ended: "+r.Err.Error())
+				level, message := recordingFailure(*r, true)
+				e.log.WriteError(level, id, message, r.Err)
 			} else {
 				e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
 				if it.config.PostProcess && r.Bytes > 0 && e.ctx.Err() == nil {
@@ -957,7 +969,7 @@ func (e *Engine) fileChanges(it *item) {
 
 func (e *Engine) persist(change func(*state.Data)) {
 	if err := e.store.Update(func(d *state.Data) error { change(d); return nil }); err != nil {
-		e.log.Write("ERROR", "storage", err.Error())
+		e.log.WriteError("ERROR", "storage", "Could not save streamer and recording history: "+fault.Reason(err)+". Recent changes may not survive an app restart. Check available disk space and folder permissions.", err)
 	}
 }
 

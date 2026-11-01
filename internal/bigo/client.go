@@ -14,12 +14,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 const Origin = "https://www.bigo.tv"
 const apiBase = "https://ta.bigo.tv/official_website"
 
-var ErrLoginRequired = errors.New("BIGO requires a valid signed-in web cookie")
+var ErrLoginRequired = fault.Action("BIGO could not authenticate the saved account; check BIGO Account in Settings", nil)
 var ErrURLWithheld = errors.New("streamer is live but BIGO supplied no playback URL")
 
 type Account struct {
@@ -141,7 +143,20 @@ type HTTPError struct {
 }
 
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("BIGO %s: HTTP %d %s (retry after %s)", e.Endpoint, e.Status, http.StatusText(e.Status), e.RetryAfter)
+	message := fmt.Sprintf("BIGO refused the request (HTTP %d %s)", e.Status, http.StatusText(e.Status))
+	if e.Status == http.StatusTooManyRequests {
+		message = "BIGO is limiting requests (HTTP 429)"
+	} else if e.Status >= 500 {
+		message = fmt.Sprintf("BIGO's service is temporarily unavailable (HTTP %d %s)", e.Status, http.StatusText(e.Status))
+	}
+	if e.RetryAfter > 0 {
+		message += fmt.Sprintf("; requests paused for at least %s", e.RetryAfter.Round(time.Second))
+	}
+	return message
+}
+
+func (e *HTTPError) DiagnosticDetails() string {
+	return fmt.Sprintf("BIGO endpoint %s: %s", e.Endpoint, e.Error())
 }
 
 type Client struct {
@@ -273,7 +288,11 @@ func (c *Client) Check(ctx context.Context, id string) (Stream, error) {
 func (c *Client) request(ctx context.Context, method, path string, form url.Values, target any) error {
 	cookie, err := c.wait(ctx)
 	if err != nil {
-		return err
+		message := "waiting for a turn in the BIGO request queue was interrupted"
+		if errors.Is(err, context.DeadlineExceeded) {
+			message = "the BIGO request queue wait timed out before a request could be sent"
+		}
+		return fault.Wrap(message, err)
 	}
 	var body io.Reader
 	if form != nil {
@@ -296,19 +315,24 @@ func (c *Client) request(ctx context.Context, method, path string, form url.Valu
 		if errors.As(err, &u) {
 			err = u.Err
 		}
-		return fmt.Errorf("BIGO request: %w", err)
+		return fault.Wrap("BIGO did not answer the request: "+fault.Reason(err), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		delay := retryDelay(resp.Header.Get("Retry-After"))
+		var delay time.Duration
 		if resp.StatusCode == 429 || resp.StatusCode == 403 {
+			delay = retryDelay(resp.Header.Get("Retry-After"))
 			c.mu.Lock()
 			c.next = maxTime(c.next, time.Now().Add(max(delay, 30*time.Second)))
+			delay = time.Until(c.next)
 			c.mu.Unlock()
 		}
 		return &HTTPError{resp.StatusCode, delay, strings.Split(path, "?")[0]}
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(target)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(target); err != nil {
+		return fault.Wrap("BIGO returned an incomplete or unreadable response", err)
+	}
+	return nil
 }
 func retryDelay(v string) time.Duration {
 	if v == "" {
