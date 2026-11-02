@@ -20,10 +20,11 @@ import (
 )
 
 type Result struct {
-	Path    string
-	Bytes   int64
-	EndedAt time.Time
-	Err     error
+	Path      string
+	Bytes     int64
+	EndedAt   time.Time
+	Err       error
+	RoomEnded bool
 }
 
 type Handle struct {
@@ -38,6 +39,7 @@ type Handle struct {
 	changes        []FileChange
 	roomKind       bigo.RoomKind
 	activeFiles    map[string]time.Time // Present only for concurrent guest files.
+	broadcast      state.Broadcast
 }
 
 func (h *Handle) Stop()                 { h.cancel() }
@@ -54,19 +56,26 @@ func FindFFmpeg(configured string) (string, error) {
 
 // Start returns only after FFmpeg has started. Context cancellation closes the
 // HLS reader and stdin, allowing FFmpeg to finalize the MKV before a bounded kill.
-func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg state.Config, recovery bigo.StreamRecovery) (*Handle, error) {
+func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg state.Config, recovery bigo.StreamRecovery, settings ...Options) (*Handle, error) {
 	ffmpeg, err := FindFFmpeg(cfg.FFmpegPath)
 	if err != nil {
 		return nil, fault.Action("FFmpeg was not found; install or select it in Settings", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
+	options := Options{}
+	if len(settings) > 0 {
+		options = settings[0]
+	}
 	if source.RoomKind == bigo.RoomHybridMultiGuest || source.RoomKind == bigo.RoomAudioMultiGuest {
+		if options.Broadcast.ID == "" {
+			options.Broadcast = NewBroadcast(s, source, cfg, time.Now())
+		}
 		room, err := bigo.OpenGuestRoom(ctx, source, recovery)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		h := startGuestRoom(ctx, cancel, ffmpeg, s, cfg, room, recovery.Report)
+		h := startGuestRoom(ctx, cancel, ffmpeg, s, cfg, room, recovery.Report, options)
 		h.roomKind = source.RoomKind
 		return h, nil
 	}
@@ -75,9 +84,13 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		cancel()
 		return nil, err
 	}
+	if options.Broadcast.ID != "" {
+		capture = participantCapture{Capture: capture, broadcast: options.Broadcast}
+	}
 	h, err := startCapture(ctx, cancel, ffmpeg, s, cfg, capture, recovery.Report)
 	if h != nil {
 		h.roomKind = source.RoomKind
+		h.broadcast = options.Broadcast
 	}
 	return h, err
 }
@@ -133,6 +146,10 @@ func finish(cmd *exec.Cmd, wait <-chan error) error {
 }
 
 func safeName(s string) string {
+	return shortName(s, 90)
+}
+
+func shortName(s string, limit int) string {
 	var b strings.Builder
 	for _, r := range s {
 		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
@@ -140,7 +157,7 @@ func safeName(s string) string {
 		} else {
 			b.WriteRune(r)
 		}
-		if b.Len() >= 90 {
+		if b.Len() >= limit {
 			break
 		}
 	}

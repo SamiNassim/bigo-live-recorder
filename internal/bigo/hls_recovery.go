@@ -22,7 +22,10 @@ type StreamRecovery struct {
 	// Origin retries native playback only while a web fallback is in use. It
 	// must use the existing room and shared messaging login, without polling
 	// web presence or playback APIs.
-	Origin  func(context.Context, Stream) (Stream, error)
+	Origin func(context.Context, Stream) (Stream, error)
+	// Room verifies an existing native room after failed media, even when web
+	// presence disagrees. Only an explicit not-found response confirms its end.
+	Room    func(context.Context, Stream) (Stream, error)
 	stopHLS func() bool
 }
 

@@ -18,10 +18,14 @@ type Capture interface {
 
 type CapturePart struct {
 	io.ReadCloser
-	Reason         string
-	Native         bool
-	AudioOnly      bool
-	ParticipantUID uint32
+	Reason          string
+	Native          bool
+	AudioOnly       bool
+	ParticipantUID  uint32
+	ParticipantID   string
+	ParticipantName string
+	BroadcastID     string
+	Directory       string
 }
 
 func (p *CapturePart) NativeTimestamps() bool { return p.Native }

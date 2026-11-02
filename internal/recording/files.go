@@ -23,9 +23,11 @@ import (
 // capture. A nil Result is a newly started file. Each file keeps the normal
 // collision-resistant filename and its own recording-history entry.
 type FileChange struct {
-	Path      string
-	StartedAt time.Time
-	Result    *Result
+	Path        string
+	StartedAt   time.Time
+	Result      *Result
+	BroadcastID string
+	Guest       bigo.Profile
 }
 
 func (h *Handle) DrainFileChanges() []FileChange {
@@ -40,13 +42,17 @@ func (h *Handle) fileStarted(file *fileWriter) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.currentPath, h.currentStarted = file.path, file.started
-	h.changes = append(h.changes, FileChange{Path: file.path, StartedAt: file.started})
+	h.changes = append(h.changes, file.change(nil))
 }
 
 func (h *Handle) fileFinished(file *fileWriter, result Result) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.changes = append(h.changes, FileChange{Path: file.path, StartedAt: file.started, Result: &result})
+	h.changes = append(h.changes, file.change(&result))
+}
+
+func (f *fileWriter) change(result *Result) FileChange {
+	return FileChange{Path: f.path, StartedAt: f.started, Result: result, BroadcastID: f.part.BroadcastID, Guest: bigo.Profile{UID: f.part.ParticipantUID, ID: f.part.ParticipantID, Name: f.part.ParticipantName}}
 }
 
 type fileWriter struct {
@@ -69,10 +75,24 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	}
 	path := recordingPath(s, cfg, stamp, hex.EncodeToString(suffix[:]))
 	if part.ParticipantUID != 0 {
-		path = recordingPath(s, cfg, stamp, fmt.Sprintf("guest-%d_%s", part.ParticipantUID, hex.EncodeToString(suffix[:])))
+		id, name := part.ParticipantID, part.ParticipantName
+		if id == "" {
+			id = fmt.Sprintf("uid-%d", part.ParticipantUID)
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		filename := safeName(s.ID) + "_" + safeName(id) + "_" + shortName(name, 48) + "_" + stamp.Format("2006-01-02_15-04-05") + "_" + hex.EncodeToString(suffix[:]) + ".mkv"
+		path = filepath.Join(filepath.Dir(path), filename)
+		if part.Directory != "" {
+			path = filepath.Join(part.Directory, filename)
+		}
 	}
 	if part.AudioOnly {
 		path = strings.TrimSuffix(path, ".mkv") + ".mka"
+	}
+	if part.Directory != "" {
+		path = filepath.Join(part.Directory, filepath.Base(path))
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fault.Action("could not create the recording folder; check disk space and folder permissions", err)

@@ -45,6 +45,7 @@ type guestRoom struct {
 	guests    chan Participant
 	done      chan struct{}
 	lastMedia atomic.Int64
+	lastVideo atomic.Int64
 	members   map[uint32]*guestMember // Owned by dispatch until done closes.
 }
 
@@ -123,13 +124,44 @@ func (r *guestRoom) refresh() (Stream, error) {
 	}
 	ctx, cancel := context.WithTimeout(r.ctx, 25*time.Second)
 	defer cancel()
+	// When another guest track is healthy, renew the room ticket directly.
+	// Reconnecting an idle camera connection must not start web API polling.
+	if r.recovery.Room != nil && time.Since(time.Unix(0, r.lastMedia.Load())) < time.Minute {
+		fresh, err := r.recovery.Room(ctx, source)
+		if err != nil {
+			return Stream{}, err
+		}
+		if fresh.RoomKind != source.RoomKind {
+			return fresh, errRoomModeChanged
+		}
+		if fresh.native == nil {
+			return Stream{}, ErrOriginUnavailable
+		}
+		r.mu.Lock()
+		r.source = fresh
+		r.mu.Unlock()
+		return fresh, nil
+	}
 	fresh, err := r.recovery.Refresh(ctx)
+	if errors.Is(err, ErrRoomEnded) && r.recovery.Room != nil {
+		fresh, err = r.recovery.Room(ctx, source)
+	}
 	if err != nil {
 		return Stream{}, err
 	}
 	if fresh.Alive != 1 || fresh.RoomID != source.RoomID || fresh.RoomKind != source.RoomKind ||
 		(fresh.UID != 0 && source.UID != 0 && fresh.UID != source.UID) {
-		return fresh, io.EOF
+		if r.recovery.Room != nil {
+			fresh, err = r.recovery.Room(ctx, source)
+			if err != nil {
+				return Stream{}, err
+			}
+		} else if fresh.Alive != 1 || fresh.RoomID != source.RoomID {
+			return fresh, ErrRoomEnded
+		}
+		if fresh.RoomKind != source.RoomKind {
+			return fresh, errRoomModeChanged
+		}
 	}
 	if fresh.native == nil {
 		return Stream{}, ErrOriginUnavailable
@@ -165,8 +197,8 @@ func (r *guestRoom) transport(video bool) {
 				return
 			}
 			if _, err := r.refresh(); err != nil {
-				if errors.Is(err, io.EOF) {
-					r.finish(nil)
+				if errors.Is(err, ErrRoomEnded) || errors.Is(err, errRoomModeChanged) {
+					r.finish(err)
 					return
 				}
 				last = err
@@ -182,7 +214,9 @@ func (r *guestRoom) transport(video bool) {
 		if time.Since(started) > time.Minute {
 			attempt = -1
 		}
-		r.recovery.reportError("WARN", "The guest "+track+" connection was interrupted. Other guest media continues while it reconnects.", last)
+		if !video || r.lastVideo.Load() != 0 {
+			r.recovery.reportError("WARN", "The guest "+track+" connection was interrupted. Other guest media continues while it reconnects.", last)
+		}
 	}
 }
 
@@ -306,6 +340,9 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 			}
 		}
 		for _, frame := range frames {
+			if frame.video {
+				r.lastVideo.Store(time.Now().UnixNano())
+			}
 			r.lastMedia.Store(time.Now().UnixNano())
 			select {
 			case r.frames <- guestFrame{uid: uid, frame: frame}:
@@ -352,8 +389,8 @@ func (r *guestRoom) watchMedia() {
 			}
 			attempts++
 			next = now.Add(45 * time.Second)
-			if _, err := r.refresh(); errors.Is(err, io.EOF) {
-				r.finish(nil)
+			if _, err := r.refresh(); errors.Is(err, ErrRoomEnded) || errors.Is(err, errRoomModeChanged) {
+				r.finish(err)
 				return
 			}
 		}

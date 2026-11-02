@@ -84,12 +84,32 @@ type Recording struct {
 	Bytes         int64     `json:"bytes"`
 	Error         string    `json:"error,omitempty"`
 	ProcessedPath string    `json:"processed_path,omitempty"`
+	BroadcastID   string    `json:"broadcast_id,omitempty"`
+	GuestUID      uint32    `json:"guest_uid,omitempty"`
+	GuestID       string    `json:"guest_id,omitempty"`
+	GuestName     string    `json:"guest_name,omitempty"`
+}
+
+// Broadcast outlives individual files, media reconnects and application restarts.
+// RoomID is the full provider room identity, not its truncated transport SID.
+type Broadcast struct {
+	ID         string    `json:"id"`
+	StreamerID string    `json:"streamer_id"`
+	OwnerUID   uint32    `json:"owner_uid"`
+	RoomID     string    `json:"room_id"`
+	Directory  string    `json:"directory"`
+	StartedAt  time.Time `json:"started_at"`
+	EndedAt    time.Time `json:"ended_at,omitempty"`
+	Notified   bool      `json:"notified,omitempty"`
+	Files      int       `json:"files"`
+	Bytes      int64     `json:"bytes"`
 }
 
 type Data struct {
 	Version    int         `json:"version"`
 	Streamers  []Streamer  `json:"streamers"`
 	Recordings []Recording `json:"recordings"`
+	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
 }
 
 func Defaults() Config {
@@ -246,6 +266,7 @@ func (s *Store) DataSince(revision uint64) (Data, uint64) {
 func clone(d Data) Data {
 	d.Streamers = append([]Streamer(nil), d.Streamers...)
 	d.Recordings = append([]Recording(nil), d.Recordings...)
+	d.Broadcasts = append([]Broadcast(nil), d.Broadcasts...)
 	return d
 }
 func (s *Store) SaveConfig(c Config) error {
@@ -282,6 +303,17 @@ func (s *Store) Update(fn func(*Data) error) error {
 	}
 	if len(next.Recordings) > 2000 {
 		next.Recordings = next.Recordings[len(next.Recordings)-2000:]
+	}
+	if excess := len(next.Broadcasts) - 2000; excess > 0 {
+		kept := make([]Broadcast, 0, len(next.Broadcasts))
+		for _, broadcast := range next.Broadcasts {
+			if excess > 0 && !broadcast.EndedAt.IsZero() {
+				excess--
+				continue
+			}
+			kept = append(kept, broadcast)
+		}
+		next.Broadcasts = kept
 	}
 	if err := writeJSON(filepath.Join(s.dir, "data.json"), next); err != nil {
 		return err

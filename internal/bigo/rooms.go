@@ -2,9 +2,13 @@ package bigo
 
 import (
 	"context"
+	"errors"
 
 	"bigo-live-recorder/internal/bigolistener"
 )
+
+var ErrRoomEnded = errors.New("BIGO confirms that the room no longer exists")
+var errRoomModeChanged = errors.New("BIGO room media mode changed")
 
 // RoomKind describes an explicitly identified room mode. Missing video or web
 // playback alone never establishes that a room is audio-only.

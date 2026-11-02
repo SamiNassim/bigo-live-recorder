@@ -73,23 +73,26 @@ type item struct {
 	config            state.Config
 	audioRoom         string
 	recordNotified    bool
+	broadcastID       string
 }
 
 type Engine struct {
-	store      *state.Store
-	log        *logging.Log
-	client     streamClient
-	start      startRecording
-	hub        *bigolistener.Hub
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	items      map[string]*item
-	wake       chan struct{}
-	events     chan Event
-	wg         sync.WaitGroup
-	processing chan struct{}
-	process    func(context.Context, string, state.Config) (string, error)
+	verifyingBroadcasts map[string]bool
+	verificationSlots   chan struct{}
+	store               *state.Store
+	log                 *logging.Log
+	client              streamClient
+	start               startRecording
+	hub                 *bigolistener.Hub
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	mu                  sync.Mutex
+	items               map[string]*item
+	wake                chan struct{}
+	events              chan Event
+	wg                  sync.WaitGroup
+	processing          chan struct{}
+	process             func(context.Context, string, state.Config) (string, error)
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {
@@ -113,6 +116,9 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (activeRecording, error) {
 	stream, err := e.playbackSource(ctx, streamer, source, cfg, nil)
 	if err != nil {
+		if errors.Is(err, bigo.ErrRoomEnded) {
+			e.finishRoom(streamer.ID, source.RoomID)
+		}
 		return nil, err
 	}
 	recovery := bigo.StreamRecovery{
@@ -129,7 +135,17 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 			return e.client.(nativeStreamClient).OriginStream(ctx, current, e.hub)
 		}
 	}
-	return recording.Start(ctx, streamer, stream, cfg, recovery)
+	if native, ok := e.client.(nativeStreamClient); ok && cfg.NativeListening {
+		recovery.Room = func(ctx context.Context, current bigo.Stream) (bigo.Stream, error) {
+			current.Alive = 1
+			return native.OriginStream(ctx, current, e.hub)
+		}
+	}
+	options, err := e.broadcastOptions(ctx, streamer, stream, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return recording.Start(ctx, streamer, stream, cfg, recovery, options)
 }
 
 func (e *Engine) refreshPlayback(ctx context.Context, streamer state.Streamer, cfg state.Config) (bigo.Stream, error) {
@@ -706,6 +722,7 @@ func (e *Engine) check(id string) {
 	cfg := e.store.Config()
 	if err == nil || errors.Is(err, bigo.ErrURLWithheld) {
 		stream = e.inspectRoom(e.ctx, id, stream, cfg)
+		e.verifyPreviousBroadcasts(e.ctx, id, stream, cfg)
 	}
 	if e.ctx.Err() != nil {
 		return
@@ -842,6 +859,15 @@ func (e *Engine) check(id string) {
 			it.row.NextCheck = time.Now()
 			return
 		}
+		if errors.Is(startErr, bigo.ErrRoomEnded) {
+			it.row.Live = false
+			it.row.RoomKind = bigo.RoomUnknown
+			it.row.Status = "Offline"
+			it.row.Error = ""
+			it.pending = false
+			it.retryUntil = time.Time{}
+			return
+		}
 		it.row.Status = "Needs attention"
 		it.row.Error = "Could not start recording: " + fault.Reason(startErr)
 		if it.retryUntil.IsZero() {
@@ -859,6 +885,11 @@ func (e *Engine) check(id string) {
 	}
 	it.handle = h
 	it.recordNotified = false
+	it.broadcastID = ""
+	if source, ok := h.(interface{ Broadcast() state.Broadcast }); ok {
+		it.broadcastID = source.Broadcast().ID
+		it.recordNotified = e.broadcastNotified(it.broadcastID)
+	}
 	if source, ok := h.(interface{ RoomKind() bigo.RoomKind }); ok {
 		it.row.RoomKind = source.RoomKind()
 	}
@@ -872,11 +903,6 @@ func (e *Engine) check(id string) {
 	it.row.NextCheck = time.Time{}
 	if h.File() == "" {
 		it.row.Status = "Waiting for guest media"
-		message := "Multi-guest room connected. Each guest's original media will be saved separately as it arrives."
-		if it.row.RoomKind == bigo.RoomAudioMultiGuest {
-			message = "Audio-only multi-guest room connected. Each speaker's original audio will be saved separately as it arrives."
-		}
-		e.log.Write("INFO", id, message)
 		current = e.store.Data()
 		at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
 		if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil {
@@ -895,9 +921,8 @@ func (e *Engine) check(id string) {
 				}
 			}
 		}
-		d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", h.Started().UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: h.File(), StartedAt: h.Started()})
+		d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", h.Started().UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: h.File(), StartedAt: h.Started(), BroadcastID: it.broadcastID})
 	})
-	e.log.Write("INFO", id, "Recording started: "+h.File())
 	current = e.store.Data()
 	at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
 	if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil {
@@ -905,11 +930,7 @@ func (e *Engine) check(id string) {
 		it.row.Status = "Finalizing"
 		return
 	}
-	select {
-	case e.events <- Event{it.row.Streamer.DisplayName(), id, h.File()}:
-	default:
-	}
-	it.recordNotified = true
+	e.notifyRecording(it, h.File())
 }
 
 func (e *Engine) completed(it *item) {
@@ -917,16 +938,7 @@ func (e *Engine) completed(it *item) {
 	r := it.handle.Result()
 	alreadyFinalized := slices.ContainsFunc(e.store.Data().Recordings, func(saved state.Recording) bool { return saved.Path == r.Path && !saved.EndedAt.IsZero() })
 	e.persist(func(d *state.Data) {
-		for i := range d.Recordings {
-			if d.Recordings[i].Path == r.Path && !alreadyFinalized {
-				d.Recordings[i].Path = r.Path
-				d.Recordings[i].EndedAt = r.EndedAt
-				d.Recordings[i].Bytes = r.Bytes
-				if r.Err != nil {
-					d.Recordings[i].Error = r.Err.Error()
-				}
-			}
-		}
+		finishBroadcastFile(d, r.Path, r)
 	})
 	if r.Err != nil {
 		it.row.Error = fault.Reason(r.Err)
@@ -935,8 +947,11 @@ func (e *Engine) completed(it *item) {
 			message += " Monitoring will continue."
 		}
 		e.log.WriteError(level, it.row.Streamer.ID, message, r.Err)
-	} else if !alreadyFinalized && r.Path != "" {
+	} else if it.broadcastID == "" && !alreadyFinalized && r.Path != "" {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
+	}
+	if r.RoomEnded && it.broadcastID != "" {
+		e.finishBroadcast(it.broadcastID)
 	}
 	if !alreadyFinalized && it.config.PostProcess && r.Err == nil && r.Bytes > 0 && e.ctx.Err() == nil {
 		e.processCopy(it.row.Streamer.ID, r.Path, it.config)
@@ -947,6 +962,7 @@ func (e *Engine) completed(it *item) {
 		it.recordCancel = nil
 	}
 	it.handle = nil
+	it.broadcastID = ""
 	it.row.StartedAt = time.Time{}
 	it.row.Path = ""
 	it.row.Status = "Waiting"
@@ -971,20 +987,20 @@ func (e *Engine) fileChanges(it *item) {
 	e.persist(func(d *state.Data) {
 		for _, change := range changes {
 			if change.Result != nil {
-				for i := range d.Recordings {
-					if d.Recordings[i].Path == change.Path {
-						r := change.Result
-						d.Recordings[i].EndedAt = r.EndedAt
-						d.Recordings[i].Bytes = r.Bytes
-						if r.Err != nil {
-							d.Recordings[i].Error = r.Err.Error()
-						}
-					}
-				}
+				finishBroadcastFile(d, change.Path, *change.Result)
 				continue
 			}
 			if !slices.ContainsFunc(d.Recordings, func(r state.Recording) bool { return r.Path == change.Path }) {
-				d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", change.StartedAt.UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: change.Path, StartedAt: change.StartedAt})
+				d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", change.StartedAt.UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: change.Path, StartedAt: change.StartedAt, BroadcastID: change.BroadcastID})
+			}
+			for i := range d.Recordings {
+				if d.Recordings[i].Path == change.Path {
+					saved := &d.Recordings[i]
+					saved.GuestUID, saved.GuestID, saved.GuestName = change.Guest.UID, change.Guest.ID, change.Guest.Name
+					if change.Guest.Name != "" {
+						saved.Name = it.row.Streamer.DisplayName() + " · " + change.Guest.ID + " (" + change.Guest.Name + ")"
+					}
+				}
 			}
 			for i := range d.Streamers {
 				if d.Streamers[i].ID == id {
@@ -1002,7 +1018,9 @@ func (e *Engine) fileChanges(it *item) {
 				level, message := recordingFailure(*r, true)
 				e.log.WriteError(level, id, message, r.Err)
 			} else {
-				e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
+				if it.broadcastID == "" {
+					e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
+				}
 				if it.config.PostProcess && r.Bytes > 0 && e.ctx.Err() == nil {
 					e.processCopy(id, r.Path, it.config)
 				}
@@ -1015,13 +1033,8 @@ func (e *Engine) fileChanges(it *item) {
 				it.row.Status = "Recording"
 			}
 			if first {
-				it.recordNotified = true
-				e.log.Write("INFO", id, "Recording started: "+change.Path)
-				select {
-				case e.events <- Event{it.row.Streamer.DisplayName(), id, change.Path}:
-				default:
-				}
-			} else {
+				e.notifyRecording(it, change.Path)
+			} else if it.broadcastID == "" {
 				e.log.Write("INFO", id, "Recording continued: "+change.Path)
 			}
 		}

@@ -67,13 +67,23 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 	cfg.FolderPerStreamer = true
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	h := startGuestRoom(ctx, cancel, ffmpeg, state.Streamer{ID: "demo", Name: "Demo"}, cfg, room, nil)
+	streamer := state.Streamer{ID: "demo", Name: "Demo"}
+	broadcast := NewBroadcast(streamer, bigo.Stream{UID: 900000010, RoomID: "8589934634"}, cfg, time.Now())
+	h := startGuestRoom(ctx, cancel, ffmpeg, streamer, cfg, room, nil, Options{Broadcast: broadcast, GuestProfile: func(_ context.Context, uid uint32) (bigo.Profile, error) {
+		if uid == 900000001 {
+			return bigo.Profile{UID: uid, ID: "guest.one", Name: "Guest One"}, nil
+		}
+		return bigo.Profile{UID: uid, ID: "guest.two", Name: "Guest Two"}, nil
+	}})
 	result := h.Result()
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	starts, ends := map[string]int{}, map[string]int{}
 	for _, change := range h.DrainFileChanges() {
+		if change.BroadcastID != broadcast.ID || change.Guest.ID == "" || change.Guest.Name == "" {
+			t.Fatal("guest or broadcast metadata missing", change)
+		}
 		if change.Result == nil {
 			starts[change.Path]++
 		} else {
@@ -91,11 +101,11 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 		if count != 1 || ends[path] != 1 {
 			t.Fatal("duplicate guest lifecycle events")
 		}
-		if !strings.HasPrefix(filepath.Base(path), "demo_") || filepath.Base(filepath.Dir(path)) != "demo_Demo" {
+		if !strings.HasPrefix(filepath.Base(path), "demo_") || filepath.Dir(path) != broadcast.Directory {
 			t.Fatal("guest filename or folder lost the monitored ID")
 		}
-		video = video || strings.Contains(path, "guest-900000001_") && strings.HasSuffix(path, ".mkv")
-		audio = audio || strings.Contains(path, "guest-900000002_") && strings.HasSuffix(path, ".mka")
+		video = video || strings.Contains(path, "guest.one_Guest One_") && strings.HasSuffix(path, ".mkv")
+		audio = audio || strings.Contains(path, "guest.two_Guest Two_") && strings.HasSuffix(path, ".mka")
 	}
 	if !video || !audio || h.File() != "" {
 		t.Fatal("wrong guest file type or active status")

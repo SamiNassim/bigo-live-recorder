@@ -11,6 +11,10 @@ import (
 // before another UI operation can change them.
 func (e *Engine) processCopy(id, source string, cfg state.Config) {
 	process := e.process
+	quiet := false
+	if it := e.items[id]; it != nil {
+		quiet = it.broadcastID != ""
+	}
 	e.wg.Go(func() {
 		select {
 		case e.processing <- struct{}{}:
@@ -18,10 +22,14 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 		case <-e.ctx.Done():
 			return
 		}
-		e.log.Write("INFO", id, "Creating a processed copy; original MKV is preserved")
+		if !quiet {
+			e.log.Write("INFO", id, "Creating a processed copy; original MKV is preserved")
+		}
 		path, err := process(e.ctx, source, cfg)
 		if e.ctx.Err() != nil {
-			e.log.Write("INFO", id, "Processing interrupted on shutdown; original MKV is preserved")
+			if !quiet {
+				e.log.Write("INFO", id, "Processing interrupted on shutdown; original MKV is preserved")
+			}
 			return
 		}
 		e.persist(func(d *state.Data) {
@@ -40,7 +48,7 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 				level = "ERROR"
 			}
 			e.log.WriteError(level, id, "Processed copy failed: "+fault.Reason(err), err)
-		} else {
+		} else if !quiet {
 			e.log.Write("INFO", id, "Processed copy ready; original MKV kept")
 		}
 	})

@@ -90,6 +90,9 @@ func queryNativeRoom(ctx context.Context, source Stream, hub *bigolistener.Hub) 
 		return pJoinChannelRes{}, fault.Wrap("BIGO returned unreadable native stream connection details", err)
 	}
 	if response.code != 200 {
+		if response.code == 404 {
+			return pJoinChannelRes{}, ErrRoomEnded
+		}
 		return pJoinChannelRes{}, fmt.Errorf("BIGO media channel rejected: code=%d", response.code)
 	}
 	if response.sequence != sequence || response.sid != sid {
