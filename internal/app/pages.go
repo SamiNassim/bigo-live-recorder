@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/monitor"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
@@ -46,7 +47,8 @@ func (a *application) streamers(c *ui.Context) {
 			})
 		} else {
 			columns := []ui.TableColumn{{Title: "Streamer", MinWidth: 160}, {Title: "Status", Width: 160}, {Title: "Duration", Width: 80}, {Title: "Last recorded", Width: 140}, {Title: "Next check", Width: 100}, {Title: "Priority", Width: 80}, {Title: "", ID: "actions", Width: 52, Fixed: true}}
-			listening := a.snapshot.Listener.Connected && a.store.Config().NativeListening
+			cfg := a.store.Config()
+			listening := a.snapshot.Listener.Connected && cfg.NativeListening
 			first, last := a.streamList.Visible()
 			ui.Table(c, &a.streamList, columns, len(rows), func(row, col int) {
 				r := rows[row]
@@ -87,13 +89,20 @@ func (a *application) streamers(c *ui.Context) {
 							detail += "Last verified: " + timestamp(r.LiveCheckedAt)
 						}
 						label := r.Status
-						if a.cfg.NativeListening && !a.cfg.PollingBackup && r.Streamer.RecordingPaused {
+						audioRoom := r.RoomKind == bigo.RoomAudioMultiGuest
+						if audioRoom {
+							detail += "\nAudio-only multi-guest room. Video recording is skipped; monitoring remains enabled."
+						}
+						if cfg.NativeListening && !cfg.PollingBackup && (r.Streamer.RecordingPaused || audioRoom) {
 							if label == "Live" {
 								label = "Live (last check)"
 							}
 							detail += "\nNative-only presence is last confirmed status; it is updated on events, not continuously polled."
 						}
 						ui.Text(c, "●  "+label).FontSize(12).TextColor(color).SingleLine().Tooltip(detail)
+						if audioRoom {
+							ui.Text(c, "Audio-only multi-guest room").FontSize(10).TextColor(t.TextMuted).SingleLine().Tooltip("Video recording is skipped for this room type.")
+						}
 						if r.Streamer.RecordingPaused && !r.Streamer.Paused {
 							ui.Text(c, "Recording paused").FontSize(10).TextColor(t.Warning)
 						}

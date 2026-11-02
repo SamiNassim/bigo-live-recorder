@@ -24,6 +24,9 @@ type CapturePart struct {
 func (p *CapturePart) NativeTimestamps() bool { return p.Native }
 
 func OpenCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+	if source.RoomKind == RoomAudioMultiGuest {
+		return nil, ErrAudioOnlyRoom
+	}
 	if source.native != nil {
 		capture, err := openNativeCapture(ctx, client, source, referer, recovery)
 		if err == nil {

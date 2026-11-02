@@ -28,6 +28,7 @@ type Row struct {
 	Path                            string
 	Live                            bool
 	LiveCheckedAt                   time.Time
+	RoomKind                        bigo.RoomKind
 }
 type Snapshot struct {
 	Rows                                         []Row
@@ -70,6 +71,7 @@ type item struct {
 	subUID            uint32
 	bootstrapFailures int
 	config            state.Config
+	audioRoom         string
 }
 
 type Engine struct {
@@ -112,6 +114,9 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 	if err != nil {
 		return nil, err
 	}
+	if stream.RoomKind == bigo.RoomAudioMultiGuest {
+		return nil, bigo.ErrAudioOnlyRoom
+	}
 	recovery := bigo.StreamRecovery{
 		// Recovery is called only after a media error or stall, never while
 		// recording advances normally. Always resolve the current room anew.
@@ -145,7 +150,8 @@ func (e *Engine) playbackInfo(ctx context.Context, streamer state.Streamer, cfg 
 		return bigo.Stream{}, err
 	}
 	source, err := e.client.Check(ctx, streamer.ID)
-	if !e.wantsNative(streamer, cfg) || (err != nil && !errors.Is(err, bigo.ErrURLWithheld)) ||
+	appOnly := cfg.NativeListening && source.RoomStatus == 4
+	if (!e.wantsNative(streamer, cfg) && !appOnly) || (err != nil && !errors.Is(err, bigo.ErrURLWithheld)) ||
 		(source.Alive == 1 && source.RoomID != "" && source.RoomID != "0") {
 		return source, err
 	}
@@ -167,6 +173,7 @@ func (e *Engine) playbackInfo(ctx context.Context, streamer state.Streamer, cfg 
 	}
 	if presence.Alive == 1 {
 		source.Alive = 1
+		source.RoomStatus = presence.RoomStatus
 		if presence.RoomID != "" && presence.RoomID != "0" {
 			source.RoomID = presence.RoomID
 		}
@@ -189,7 +196,7 @@ func (e *Engine) playbackSource(ctx context.Context, streamer state.Streamer, so
 	if canceled := ctx.Err(); canceled != nil {
 		return bigo.Stream{}, canceled
 	}
-	if err == nil && !stream.Playable() {
+	if err == nil && !stream.Playable() && stream.RoomKind != bigo.RoomAudioMultiGuest {
 		err = bigo.ErrOriginUnavailable
 	}
 	if err == nil {
@@ -698,6 +705,12 @@ func (e *Engine) check(id string) {
 		return
 	}
 	cfg := e.store.Config()
+	if err == nil || errors.Is(err, bigo.ErrURLWithheld) {
+		stream = e.inspectRoom(e.ctx, id, stream, cfg)
+	}
+	if e.ctx.Err() != nil {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	it = e.items[id]
@@ -742,7 +755,8 @@ func (e *Engine) check(id string) {
 	}
 	// A withheld web URL does not prevent native playback. Keep all other API
 	// failures on their existing retry path, including missing authentication.
-	if errors.Is(err, bigo.ErrURLWithheld) && stream.Alive == 1 && !it.row.Streamer.RecordingPaused && e.wantsNative(it.row.Streamer, cfg) {
+	if errors.Is(err, bigo.ErrURLWithheld) && stream.Alive == 1 &&
+		(stream.RoomKind == bigo.RoomAudioMultiGuest || (!it.row.Streamer.RecordingPaused && e.wantsNative(it.row.Streamer, cfg))) {
 		err = nil
 	}
 	if err == nil || stream.Alive == 1 {
@@ -776,7 +790,10 @@ func (e *Engine) check(id string) {
 	}
 	it.row.Error = ""
 	it.bootstrapFailures = 0
+	it.row.RoomKind = stream.RoomKind
 	if stream.Alive != 1 {
+		it.row.RoomKind = bigo.RoomUnknown
+		it.audioRoom = ""
 		it.row.Status = "Offline"
 		if it.pending && it.lastSignal.After(signalAtStart) {
 			// A newer signal arrived during this request. Its resolution
@@ -788,7 +805,14 @@ func (e *Engine) check(id string) {
 		}
 		return
 	}
+	if stream.RoomKind == bigo.RoomAudioMultiGuest {
+		e.audioRoomLocked(it, stream.RoomID)
+		return
+	}
 	if it.row.Streamer.RecordingPaused {
+		if stream.RoomStatus != 4 {
+			it.audioRoom = ""
+		}
 		it.row.Status = "Live"
 		it.pending = false
 		it.retryUntil = time.Time{}
@@ -819,6 +843,10 @@ func (e *Engine) check(id string) {
 			it.row.NextCheck = time.Now()
 			return
 		}
+		if errors.Is(startErr, bigo.ErrAudioOnlyRoom) {
+			e.audioRoomLocked(it, stream.RoomID)
+			return
+		}
 		it.row.Status = "Needs attention"
 		it.row.Error = "Could not start recording: " + fault.Reason(startErr)
 		if it.retryUntil.IsZero() {
@@ -835,6 +863,7 @@ func (e *Engine) check(id string) {
 		return
 	}
 	it.handle = h
+	it.audioRoom = ""
 	it.config = cfg
 	it.pending = false
 	it.retryUntil = time.Time{}

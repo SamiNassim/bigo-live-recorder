@@ -40,17 +40,38 @@ type pJoinChannelRes struct {
 	cookie                                []byte
 	media, video                          []mediaProxy
 	extra                                 map[string]string
+	flags                                 uint32
 }
 
 // OriginStream queries the current room using the listener's existing login.
 // Streamer UIDs and room channel IDs are different provider identifiers.
 func (c *Client) OriginStream(ctx context.Context, source Stream, hub *bigolistener.Hub) (Stream, error) {
+	response, err := queryNativeRoom(ctx, source, hub)
+	if err != nil {
+		return Stream{}, err
+	}
+	source.RoomKind = response.roomKind()
+	if source.RoomKind == RoomAudioMultiGuest {
+		// Voice rooms still advertise video proxies. Their presence does not
+		// mean there is a video track to record.
+		source.native, source.HLS, source.CDN = nil, "", nil
+		return source, nil
+	}
+	if len(response.cookie) == 0 || len(response.cookie) > 65535 || len(response.video) == 0 || len(response.media) == 0 {
+		return nativePlayback(source, response.extra["hls"])
+	}
+	source.native = &response
+	source.Quality = "origin"
+	return source, nil
+}
+
+func queryNativeRoom(ctx context.Context, source Stream, hub *bigolistener.Hub) (pJoinChannelRes, error) {
 	if hub == nil {
-		return Stream{}, bigolistener.ErrNoConnection
+		return pJoinChannelRes{}, bigolistener.ErrNoConnection
 	}
 	room, err := strconv.ParseUint(source.RoomID, 10, 64)
 	if err != nil || uint32(room) == 0 {
-		return Stream{}, errors.New("BIGO supplied no valid room channel ID")
+		return pJoinChannelRes{}, errors.New("BIGO supplied no valid room channel ID")
 	}
 	sid := uint32(room)
 	queryCtx, cancel := context.WithTimeout(ctx, pjoinMediaServerTimeout)
@@ -58,25 +79,19 @@ func (c *Client) OriginStream(ctx context.Context, source Stream, hub *bigoliste
 	sequence := nextPJoinSeq()
 	body, err := queryMediaChannel(queryCtx, hub, sequence, sid)
 	if err != nil {
-		return Stream{}, fault.Wrap("could not obtain the native stream source: "+fault.Reason(err), err)
+		return pJoinChannelRes{}, fault.Wrap("could not obtain the native stream source: "+fault.Reason(err), err)
 	}
 	response, err := unmarshalPJoinChannelRes(body)
 	if err != nil {
-		return Stream{}, fault.Wrap("BIGO returned unreadable native stream connection details", err)
+		return pJoinChannelRes{}, fault.Wrap("BIGO returned unreadable native stream connection details", err)
 	}
 	if response.code != 200 {
-		return Stream{}, fmt.Errorf("BIGO media channel rejected: code=%d", response.code)
+		return pJoinChannelRes{}, fmt.Errorf("BIGO media channel rejected: code=%d", response.code)
 	}
 	if response.sequence != sequence || response.sid != sid {
-		return Stream{}, errors.New("BIGO media response belongs to a different request or room")
+		return pJoinChannelRes{}, errors.New("BIGO media response belongs to a different request or room")
 	}
-	if len(response.cookie) == 0 || len(response.cookie) > 65535 || len(response.video) == 0 || len(response.media) == 0 {
-		return nativePlayback(source, response.extra["hls"])
-	}
-	stream := source
-	stream.native = &response
-	stream.Quality = "origin"
-	return stream, nil
+	return response, nil
 }
 
 func queryMediaChannel(ctx context.Context, hub *bigolistener.Hub, sequence, sid uint32) ([]byte, error) {
@@ -164,7 +179,7 @@ func unmarshalPJoinChannelRes(body []byte) (pJoinChannelRes, error) {
 	steps := []func(){
 		func() { r.take(8) },
 		func() { r.skipList(8) },
-		func() { r.take(4) },
+		func() { result.flags = r.u32() },
 		func() { r.take(2) },
 		func() { r.take(1); r.skipList(8) },
 		func() { r.take(8) },

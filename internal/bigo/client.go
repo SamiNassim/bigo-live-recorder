@@ -30,16 +30,18 @@ type Account struct {
 	Avatar string `json:"data5"`
 }
 type Stream struct {
-	native    *pJoinChannelRes
-	Alive     int      `json:"alive"`
-	UID       uint32   `json:"uid"`
-	Name      string   `json:"nick_name"`
-	Avatar    string   `json:"avatar"`
-	RoomID    string   `json:"roomId"`
-	HLS       string   `json:"hls_src"`
-	CDN       []string `json:"cdn_src"`
-	NeedLogin bool     `json:"needLogin"`
-	Quality   string   `json:"quality,omitempty"`
+	native     *pJoinChannelRes
+	Alive      int      `json:"alive"`
+	UID        uint32   `json:"uid"`
+	Name       string   `json:"nick_name"`
+	Avatar     string   `json:"avatar"`
+	RoomID     string   `json:"roomId"`
+	RoomStatus int      `json:"roomStatus"`
+	RoomKind   RoomKind `json:"-"`
+	HLS        string   `json:"hls_src"`
+	CDN        []string `json:"cdn_src"`
+	NeedLogin  bool     `json:"needLogin"`
+	Quality    string   `json:"quality,omitempty"`
 }
 
 // BIGO uses both JSON strings and numbers for provider identifiers.

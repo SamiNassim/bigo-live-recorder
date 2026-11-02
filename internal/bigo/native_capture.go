@@ -147,6 +147,13 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				err = refreshErr
 				continue
 			}
+			if fresh.RoomKind == RoomAudioMultiGuest {
+				if c.recovery.Report != nil {
+					c.recovery.Report("INFO", "The room is now audio-only and multi-guest; finalizing the video recording. Monitoring remains enabled.")
+				}
+				c.queue.finish(nil)
+				return
+			}
 			if fresh.Alive != 1 || (fresh.UID != 0 && source.UID != 0 && fresh.UID != source.UID) || (fresh.RoomID != "" && source.RoomID != "" && fresh.RoomID != source.RoomID) {
 				if c.recovery.Report != nil {
 					message := "BIGO reports a different broadcast; finalizing the previous recording"
