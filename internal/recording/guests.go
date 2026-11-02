@@ -25,6 +25,7 @@ func (c participantCapture) Next(ctx context.Context) (*bigo.CapturePart, error)
 	if part != nil {
 		part.ParticipantUID = c.uid
 		part.ParticipantID, part.ParticipantName = c.profile.ID, c.profile.Name
+		part.ParticipantIdentityVersion = c.profile.IdentityVersion
 		part.BroadcastID, part.Directory = c.broadcast.ID, c.broadcast.Directory
 	}
 	return part, err
@@ -62,7 +63,7 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 					profile.UID = participant.UID
 				}
 				if lookupErr != nil && ctx.Err() == nil && report != nil {
-					report("WARN", fmt.Sprintf("Guest %d could not be identified; keeping the original media under its numeric UID.", participant.UID))
+					report("WARN", "Could not resolve a guest's public BIGO ID; preserving its media with an unidentified guest label.")
 				}
 				capture := participantCapture{Capture: participant.Capture, uid: participant.UID, profile: profile, broadcast: options.Broadcast}
 				// The room owns cancellation. Closing one source closes only
@@ -143,7 +144,11 @@ func (c *guestProfiles) get(ctx context.Context, uid uint32) (bigo.Profile, erro
 				entry.err = errors.New("BIGO returned a profile for another guest")
 			}
 			if entry.err != nil {
-				entry.profile = bigo.Profile{UID: uid}
+				if entry.profile.UID != uid {
+					entry.profile = bigo.Profile{UID: uid}
+				}
+				entry.profile.ID = ""
+				entry.profile.IdentityVersion = 0
 			}
 		}
 		close(entry.done)

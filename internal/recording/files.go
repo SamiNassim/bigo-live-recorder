@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -52,7 +51,7 @@ func (h *Handle) fileFinished(file *fileWriter, result Result) {
 }
 
 func (f *fileWriter) change(result *Result) FileChange {
-	return FileChange{Path: f.path, StartedAt: f.started, Result: result, BroadcastID: f.part.BroadcastID, Guest: bigo.Profile{UID: f.part.ParticipantUID, ID: f.part.ParticipantID, Name: f.part.ParticipantName}}
+	return FileChange{Path: f.path, StartedAt: f.started, Result: result, BroadcastID: f.part.BroadcastID, Guest: bigo.Profile{UID: f.part.ParticipantUID, ID: f.part.ParticipantID, Name: f.part.ParticipantName, IdentityVersion: f.part.ParticipantIdentityVersion}}
 }
 
 type fileWriter struct {
@@ -77,7 +76,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	if part.ParticipantUID != 0 {
 		id, name := part.ParticipantID, part.ParticipantName
 		if id == "" {
-			id = fmt.Sprintf("uid-%d", part.ParticipantUID)
+			id = "unidentified-guest"
 		}
 		if name == "" {
 			name = "unknown"

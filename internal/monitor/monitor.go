@@ -997,6 +997,7 @@ func (e *Engine) fileChanges(it *item) {
 				if d.Recordings[i].Path == change.Path {
 					saved := &d.Recordings[i]
 					saved.GuestUID, saved.GuestID, saved.GuestName = change.Guest.UID, change.Guest.ID, change.Guest.Name
+					saved.GuestIdentityVersion = change.Guest.IdentityVersion
 					if change.Guest.Name != "" {
 						saved.Name = it.row.Streamer.DisplayName() + " · " + change.Guest.ID + " (" + change.Guest.Name + ")"
 					}

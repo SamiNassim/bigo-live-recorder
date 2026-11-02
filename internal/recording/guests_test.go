@@ -3,6 +3,7 @@ package recording
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -52,13 +53,13 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	room := &fixtureGuestRoom{guests: make(chan bigo.Participant, 2)}
-	for i, uid := range []uint32{900000001, 900000002} {
+	room := &fixtureGuestRoom{guests: make(chan bigo.Participant, 3)}
+	for i, uid := range []uint32{900000001, 900000002, 900000003} {
 		payload := data
-		if i == 1 {
+		if i > 0 {
 			payload = audioData
 		}
-		capture := &fixtureCapture{parts: []*bigo.CapturePart{{ReadCloser: io.NopCloser(bytes.NewReader(payload)), AudioOnly: i == 1}}}
+		capture := &fixtureCapture{parts: []*bigo.CapturePart{{ReadCloser: io.NopCloser(bytes.NewReader(payload)), AudioOnly: i > 0}}}
 		room.guests <- bigo.Participant{UID: uid, Capture: capture}
 	}
 	room.Close()
@@ -73,6 +74,9 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 		if uid == 900000001 {
 			return bigo.Profile{UID: uid, ID: "guest.one", Name: "Guest One"}, nil
 		}
+		if uid == 900000003 {
+			return bigo.Profile{UID: uid, Name: "Guest Without ID"}, errors.New("public ID unavailable")
+		}
 		return bigo.Profile{UID: uid, ID: "guest.two", Name: "Guest Two"}, nil
 	}})
 	result := h.Result()
@@ -81,7 +85,7 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 	}
 	starts, ends := map[string]int{}, map[string]int{}
 	for _, change := range h.DrainFileChanges() {
-		if change.BroadcastID != broadcast.ID || change.Guest.ID == "" || change.Guest.Name == "" {
+		if change.BroadcastID != broadcast.ID || (change.Guest.ID == "" && change.Guest.UID != 900000003) || change.Guest.Name == "" {
 			t.Fatal("guest or broadcast metadata missing", change)
 		}
 		if change.Result == nil {
@@ -93,10 +97,11 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 			}
 		}
 	}
-	if len(starts) != 2 || len(ends) != 2 {
+	if len(starts) != 3 || len(ends) != 3 {
 		t.Fatal("lost guest history", starts, ends)
 	}
 	video, audio := false, false
+	unidentified := false
 	for path, count := range starts {
 		if count != 1 || ends[path] != 1 {
 			t.Fatal("duplicate guest lifecycle events")
@@ -106,8 +111,12 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 		}
 		video = video || strings.Contains(path, "guest.one_Guest One_") && strings.HasSuffix(path, ".mkv")
 		audio = audio || strings.Contains(path, "guest.two_Guest Two_") && strings.HasSuffix(path, ".mka")
+		unidentified = unidentified || strings.Contains(path, "unidentified-guest_Guest Without ID_") && strings.HasSuffix(path, ".mka")
+		if strings.Contains(filepath.Base(path), "900000003") {
+			t.Fatal("routing UID leaked into an unidentified guest filename")
+		}
 	}
-	if !video || !audio || h.File() != "" {
+	if !video || !audio || !unidentified || h.File() != "" {
 		t.Fatal("wrong guest file type or active status")
 	}
 }

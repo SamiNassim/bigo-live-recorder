@@ -11,11 +11,15 @@ import (
 	"bigo-live-recorder/internal/bigolistener"
 )
 
+// ProfileIdentityVersion invalidates identities resolved from obsolete fields.
+const ProfileIdentityVersion = 1
+
 // Profile links a transport UID to the public BIGO ID and display name.
 type Profile struct {
-	UID  uint32
-	ID   string
-	Name string
+	UID             uint32
+	ID              string
+	Name            string
+	IdentityVersion int
 }
 
 // Profile reads account metadata over the existing shared native connection.
@@ -34,7 +38,7 @@ func (c *Client) Profile(ctx context.Context, uid uint32, hub *bigolistener.Hub)
 		b = binary.LittleEndian.AppendUint32(b, seq)
 		b = binary.LittleEndian.AppendUint32(b, 1)
 		b = binary.LittleEndian.AppendUint32(b, uid)
-		columns := []string{"pd_bigo_id", "user_name", "bind_status", "nick_name"}
+		columns := []string{"yyuid", "pd_bigo_id", "user_name", "bind_status", "nick_name"}
 		b = binary.LittleEndian.AppendUint32(b, uint32(len(columns)))
 		for _, column := range columns {
 			b = appendNativeBlob(b, []byte(column))
@@ -70,10 +74,17 @@ func decodeProfile(body []byte, viewer, seq, uid uint32) (Profile, error) {
 		if owner == uid {
 			id := values["pd_bigo_id"]
 			bound, _ := strconv.ParseUint(values["bind_status"], 10, 32)
-			if id == "" && (bound&1 != 0 || values["user_name"] == strconv.FormatUint(uint64(owner), 10)) {
+			if id == "" && bound&1 != 0 {
 				id = values["user_name"]
 			}
-			profile = Profile{UID: owner, ID: id, Name: values["nick_name"]}
+			// The map key is a media/account routing UID. The default visible
+			// BIGO ID comes from yyuid and can be a completely different number.
+			if id == "" {
+				if value, err := strconv.ParseUint(values["yyuid"], 10, 64); err == nil && value > 0 {
+					id = values["yyuid"]
+				}
+			}
+			profile = Profile{UID: owner, ID: id, Name: values["nick_name"], IdentityVersion: ProfileIdentityVersion}
 		}
 	}
 	if r.err != nil {
@@ -84,8 +95,13 @@ func decodeProfile(body []byte, viewer, seq, uid uint32) (Profile, error) {
 			return Profile{}, fmt.Errorf("BIGO guest profile rejected (code %d)", code)
 		}
 	}
-	if profile.UID != uid || !ValidID(profile.ID) || profile.Name == "" {
-		return Profile{}, errors.New("BIGO did not supply the requested guest ID and name")
+	if profile.UID != uid {
+		return Profile{}, errors.New("BIGO did not supply the requested guest profile")
+	}
+	if !ValidID(profile.ID) {
+		profile.ID = ""
+		profile.IdentityVersion = 0
+		return profile, errors.New("BIGO did not supply the public guest ID")
 	}
 	return profile, nil
 }

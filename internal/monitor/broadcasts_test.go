@@ -20,7 +20,7 @@ type broadcastProfileClient struct {
 
 func (c *broadcastProfileClient) Profile(_ context.Context, uid uint32, _ *bigolistener.Hub) (bigo.Profile, error) {
 	c.calls.Add(1)
-	return bigo.Profile{UID: uid, ID: "guest.example", Name: "Guest"}, nil
+	return bigo.Profile{UID: uid, ID: "guest.example", Name: "Guest", IdentityVersion: bigo.ProfileIdentityVersion}, nil
 }
 
 func TestBroadcastGuestProfilesSurviveRecorderRestarts(t *testing.T) {
@@ -38,7 +38,7 @@ func TestBroadcastGuestProfilesSurviveRecorderRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Update(func(d *state.Data) error {
-		d.Recordings = append(d.Recordings, state.Recording{BroadcastID: first.Broadcast.ID, GuestUID: profile.UID, GuestID: profile.ID, GuestName: profile.Name})
+		d.Recordings = append(d.Recordings, state.Recording{BroadcastID: first.Broadcast.ID, GuestUID: profile.UID, GuestID: profile.ID, GuestName: profile.Name, GuestIdentityVersion: profile.IdentityVersion})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -50,6 +50,32 @@ func TestBroadcastGuestProfilesSurviveRecorderRestarts(t *testing.T) {
 	cached, err := again.GuestProfile(context.Background(), profile.UID)
 	if err != nil || cached != profile || client.calls.Load() != 1 {
 		t.Fatal("guest identity was not retained for the broadcast", cached, err)
+	}
+}
+
+func TestLegacyGuestIdentityCacheIsResolvedAgain(t *testing.T) {
+	store, log := fixture(t, false, false)
+	client := &broadcastProfileClient{}
+	e := &Engine{store: store, log: log, client: client}
+	streamer := state.Streamer{ID: "host.example"}
+	source := bigo.Stream{Alive: 1, UID: 900000001, RoomID: "8589934634", RoomKind: bigo.RoomHybridMultiGuest}
+	first, err := e.broadcastOptions(context.Background(), streamer, source, store.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(d *state.Data) error {
+		d.Recordings = append(d.Recordings, state.Recording{BroadcastID: first.Broadcast.ID, GuestUID: 900000002, GuestID: "900000002", GuestName: "Guest"})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	options, err := e.broadcastOptions(context.Background(), streamer, source, store.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := options.GuestProfile(context.Background(), 900000002)
+	if err != nil || profile.ID != "guest.example" || profile.IdentityVersion != bigo.ProfileIdentityVersion || client.calls.Load() != 1 {
+		t.Fatal("legacy routing UID was reused as a public identity", profile, err)
 	}
 }
 

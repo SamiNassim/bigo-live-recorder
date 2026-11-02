@@ -23,8 +23,8 @@ func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, 
 	data := e.store.Data()
 	known := make(map[uint32]bigo.Profile)
 	for _, saved := range data.Recordings {
-		if saved.BroadcastID == candidate.ID && saved.GuestUID != 0 && saved.GuestID != "" && saved.GuestName != "" {
-			known[saved.GuestUID] = bigo.Profile{UID: saved.GuestUID, ID: saved.GuestID, Name: saved.GuestName}
+		if saved.BroadcastID == candidate.ID && saved.GuestUID != 0 && saved.GuestID != "" && saved.GuestIdentityVersion == bigo.ProfileIdentityVersion {
+			known[saved.GuestUID] = bigo.Profile{UID: saved.GuestUID, ID: saved.GuestID, Name: saved.GuestName, IdentityVersion: saved.GuestIdentityVersion}
 		}
 	}
 	if client, ok := e.client.(guestProfileClient); ok {

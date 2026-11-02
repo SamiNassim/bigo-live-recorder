@@ -75,19 +75,20 @@ func (s Streamer) DisplayName() string {
 }
 
 type Recording struct {
-	ID            string    `json:"id"`
-	StreamerID    string    `json:"streamer_id"`
-	Name          string    `json:"name"`
-	Path          string    `json:"path"`
-	StartedAt     time.Time `json:"started_at"`
-	EndedAt       time.Time `json:"ended_at,omitempty"`
-	Bytes         int64     `json:"bytes"`
-	Error         string    `json:"error,omitempty"`
-	ProcessedPath string    `json:"processed_path,omitempty"`
-	BroadcastID   string    `json:"broadcast_id,omitempty"`
-	GuestUID      uint32    `json:"guest_uid,omitempty"`
-	GuestID       string    `json:"guest_id,omitempty"`
-	GuestName     string    `json:"guest_name,omitempty"`
+	ID                   string    `json:"id"`
+	StreamerID           string    `json:"streamer_id"`
+	Name                 string    `json:"name"`
+	Path                 string    `json:"path"`
+	StartedAt            time.Time `json:"started_at"`
+	EndedAt              time.Time `json:"ended_at,omitempty"`
+	Bytes                int64     `json:"bytes"`
+	Error                string    `json:"error,omitempty"`
+	ProcessedPath        string    `json:"processed_path,omitempty"`
+	BroadcastID          string    `json:"broadcast_id,omitempty"`
+	GuestUID             uint32    `json:"guest_uid,omitempty"`
+	GuestID              string    `json:"guest_id,omitempty"`
+	GuestName            string    `json:"guest_name,omitempty"`
+	GuestIdentityVersion int       `json:"guest_identity_version,omitempty"`
 }
 
 // Broadcast outlives individual files, media reconnects and application restarts.
