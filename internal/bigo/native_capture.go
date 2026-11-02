@@ -32,6 +32,7 @@ type nativeCapture struct {
 	openFallback      func(context.Context, Stream) (Capture, error)
 	replacement       Capture
 	replacementReason bool
+	guest             bool
 }
 
 type nativeVideoGOP struct {
@@ -147,9 +148,13 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				err = refreshErr
 				continue
 			}
-			if fresh.RoomKind == RoomAudioMultiGuest {
+			if fresh.RoomKind == RoomAudioMultiGuest || fresh.RoomKind == RoomHybridMultiGuest {
 				if c.recovery.Report != nil {
-					c.recovery.Report("INFO", "The room is now audio-only and multi-guest; finalizing the video recording. Monitoring remains enabled.")
+					kind := "multi-guest"
+					if fresh.RoomKind == RoomAudioMultiGuest {
+						kind = "audio-only and multi-guest"
+					}
+					c.recovery.Report("INFO", "The room is now "+kind+"; finalizing this video before checking for individual guest recordings.")
 				}
 				c.queue.finish(nil)
 				return
@@ -237,6 +242,9 @@ func (c *nativeCapture) nextFrame(ctx context.Context) (nativeMediaFrame, error)
 type nativeAudioConfig [3]byte
 
 func audioConfig(f nativeMediaFrame) nativeAudioConfig {
+	if f.codec == 7 {
+		return nativeAudioConfig{7, 2, 0}
+	}
 	if len(f.data) < 7 {
 		return nativeAudioConfig{}
 	}
@@ -257,6 +265,9 @@ func (c *nativeCapture) Next(ctx context.Context) (*CapturePart, error) {
 		}
 	}
 	c.clearPreroll()
+	if c.guest {
+		return c.nextGuestPart(ctx)
+	}
 	waiting := newNativeFrameQueue(1 << 20)
 	defer func() {
 		if waiting != nil {
@@ -380,7 +391,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
-	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio}
+	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, startWithAudio: c.guest, videoCodec: codec}
 	draining := false
 	warnedPrefix := false
 	for {
@@ -394,7 +405,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 		}
 		if f.reset {
 			c.clearPreroll()
-			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio}
+			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7}
 			draining = false
 			continue
 		}

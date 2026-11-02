@@ -36,14 +36,17 @@ type Handle struct {
 	currentPath    string
 	currentStarted time.Time
 	changes        []FileChange
+	roomKind       bigo.RoomKind
+	activeFiles    map[string]time.Time // Present only for concurrent guest files.
 }
 
 func (h *Handle) Stop()                 { h.cancel() }
 func (h *Handle) Done() <-chan struct{} { return h.done }
 func (h *Handle) Result() Result        { <-h.done; return h.result }
 
-func (h *Handle) File() string       { h.mu.Lock(); defer h.mu.Unlock(); return h.currentPath }
-func (h *Handle) Started() time.Time { h.mu.Lock(); defer h.mu.Unlock(); return h.currentStarted }
+func (h *Handle) File() string            { h.mu.Lock(); defer h.mu.Unlock(); return h.currentPath }
+func (h *Handle) Started() time.Time      { h.mu.Lock(); defer h.mu.Unlock(); return h.currentStarted }
+func (h *Handle) RoomKind() bigo.RoomKind { return h.roomKind }
 
 func FindFFmpeg(configured string) (string, error) {
 	return ffmpeg.Find(configured)
@@ -57,12 +60,26 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		return nil, fault.Action("FFmpeg was not found; install or select it in Settings", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
+	if source.RoomKind == bigo.RoomHybridMultiGuest || source.RoomKind == bigo.RoomAudioMultiGuest {
+		room, err := bigo.OpenGuestRoom(ctx, source, recovery)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		h := startGuestRoom(ctx, cancel, ffmpeg, s, cfg, room, recovery.Report)
+		h.roomKind = source.RoomKind
+		return h, nil
+	}
 	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	return startCapture(ctx, cancel, ffmpeg, s, cfg, capture, recovery.Report)
+	h, err := startCapture(ctx, cancel, ffmpeg, s, cfg, capture, recovery.Report)
+	if h != nil {
+		h.roomKind = source.RoomKind
+	}
+	return h, err
 }
 
 func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string, s state.Streamer, cfg state.Config, capture bigo.Capture, report func(string, string)) (*Handle, error) {

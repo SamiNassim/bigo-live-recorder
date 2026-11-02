@@ -26,6 +26,7 @@ type nativeMediaConn struct {
 	viewer, sid  uint32
 	owner        uint32
 	video        bool
+	guest        bool
 	subscribed   bool
 	subscription uint64
 	confirmed    bool
@@ -183,18 +184,23 @@ func (c *nativeMediaConn) control(p nativePacket) error {
 		}
 		// Audience playback uses the third channel list and role 3. Copying
 		// availability values into a publisher list selects another rendition.
+		channel, mode, multi := byte(0), byte(0), byte(0)
+		fetch := uint32(1)
+		if c.guest {
+			channel, mode, multi, fetch = 2, 2, 1, 0
+		}
 		b := binary.LittleEndian.AppendUint32(nil, c.viewer)
-		b = binary.LittleEndian.AppendUint32(b, 1)
+		b = binary.LittleEndian.AppendUint32(b, fetch)
 		c.subscription = max(c.subscription+1, uint64(time.Now().UnixMilli()))
 		b = binary.LittleEndian.AppendUint64(b, c.subscription)
 		b = appendNativeBytes(b, nil)
 		b = appendNativeBytes(b, nil)
-		b = appendNativeBytes(b, []byte{0})
+		b = appendNativeBytes(b, []byte{channel})
 		b = append(b, 0x98)
 		b = binary.LittleEndian.AppendUint32(b, c.sid)
-		b = append(b, 0, 0)
+		b = append(b, mode, 0)
 		b = append(b, make([]byte, 32)...)
-		b = append(b, 5, nativeMediaAudienceRole, 0)
+		b = append(b, 5, nativeMediaAudienceRole, multi)
 		if err := c.send(0x5902, b); err != nil {
 			return err
 		}

@@ -72,6 +72,7 @@ type item struct {
 	bootstrapFailures int
 	config            state.Config
 	audioRoom         string
+	recordNotified    bool
 }
 
 type Engine struct {
@@ -113,9 +114,6 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 	stream, err := e.playbackSource(ctx, streamer, source, cfg, nil)
 	if err != nil {
 		return nil, err
-	}
-	if stream.RoomKind == bigo.RoomAudioMultiGuest {
-		return nil, bigo.ErrAudioOnlyRoom
 	}
 	recovery := bigo.StreamRecovery{
 		// Recovery is called only after a media error or stall, never while
@@ -186,7 +184,8 @@ func (e *Engine) playbackSource(ctx context.Context, streamer state.Streamer, so
 		return bigo.Stream{}, err
 	}
 	native, supported := e.client.(nativeStreamClient)
-	if !e.wantsNative(streamer, cfg) || !supported || source.Alive != 1 {
+	appOnly := cfg.NativeListening && source.RoomStatus == 4
+	if (!e.wantsNative(streamer, cfg) && !appOnly) || !supported || source.Alive != 1 {
 		return source, webErr
 	}
 	if source.UID == 0 {
@@ -756,7 +755,7 @@ func (e *Engine) check(id string) {
 	// A withheld web URL does not prevent native playback. Keep all other API
 	// failures on their existing retry path, including missing authentication.
 	if errors.Is(err, bigo.ErrURLWithheld) && stream.Alive == 1 &&
-		(stream.RoomKind == bigo.RoomAudioMultiGuest || (!it.row.Streamer.RecordingPaused && e.wantsNative(it.row.Streamer, cfg))) {
+		(stream.RoomKind == bigo.RoomAudioMultiGuest || (!it.row.Streamer.RecordingPaused && (e.wantsNative(it.row.Streamer, cfg) || cfg.NativeListening && stream.RoomStatus == 4))) {
 		err = nil
 	}
 	if err == nil || stream.Alive == 1 {
@@ -805,7 +804,7 @@ func (e *Engine) check(id string) {
 		}
 		return
 	}
-	if stream.RoomKind == bigo.RoomAudioMultiGuest {
+	if stream.RoomKind == bigo.RoomAudioMultiGuest && it.row.Streamer.RecordingPaused {
 		e.audioRoomLocked(it, stream.RoomID)
 		return
 	}
@@ -843,10 +842,6 @@ func (e *Engine) check(id string) {
 			it.row.NextCheck = time.Now()
 			return
 		}
-		if errors.Is(startErr, bigo.ErrAudioOnlyRoom) {
-			e.audioRoomLocked(it, stream.RoomID)
-			return
-		}
 		it.row.Status = "Needs attention"
 		it.row.Error = "Could not start recording: " + fault.Reason(startErr)
 		if it.retryUntil.IsZero() {
@@ -863,6 +858,10 @@ func (e *Engine) check(id string) {
 		return
 	}
 	it.handle = h
+	it.recordNotified = false
+	if source, ok := h.(interface{ RoomKind() bigo.RoomKind }); ok {
+		it.row.RoomKind = source.RoomKind()
+	}
 	it.audioRoom = ""
 	it.config = cfg
 	it.pending = false
@@ -871,6 +870,21 @@ func (e *Engine) check(id string) {
 	it.row.StartedAt = h.Started()
 	it.row.Path = h.File()
 	it.row.NextCheck = time.Time{}
+	if h.File() == "" {
+		it.row.Status = "Waiting for guest media"
+		message := "Multi-guest room connected. Each guest's original media will be saved separately as it arrives."
+		if it.row.RoomKind == bigo.RoomAudioMultiGuest {
+			message = "Audio-only multi-guest room connected. Each speaker's original audio will be saved separately as it arrives."
+		}
+		e.log.Write("INFO", id, message)
+		current = e.store.Data()
+		at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
+		if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil {
+			h.Stop()
+			it.row.Status = "Finalizing"
+		}
+		return
+	}
 	it.row.Streamer.LastRecordedAt = h.Started()
 	e.persist(func(d *state.Data) {
 		for i := range d.Streamers {
@@ -895,14 +909,16 @@ func (e *Engine) check(id string) {
 	case e.events <- Event{it.row.Streamer.DisplayName(), id, h.File()}:
 	default:
 	}
+	it.recordNotified = true
 }
 
 func (e *Engine) completed(it *item) {
 	e.fileChanges(it)
 	r := it.handle.Result()
+	alreadyFinalized := slices.ContainsFunc(e.store.Data().Recordings, func(saved state.Recording) bool { return saved.Path == r.Path && !saved.EndedAt.IsZero() })
 	e.persist(func(d *state.Data) {
 		for i := range d.Recordings {
-			if d.Recordings[i].Path == it.handle.File() {
+			if d.Recordings[i].Path == r.Path && !alreadyFinalized {
 				d.Recordings[i].Path = r.Path
 				d.Recordings[i].EndedAt = r.EndedAt
 				d.Recordings[i].Bytes = r.Bytes
@@ -919,10 +935,10 @@ func (e *Engine) completed(it *item) {
 			message += " Monitoring will continue."
 		}
 		e.log.WriteError(level, it.row.Streamer.ID, message, r.Err)
-	} else {
+	} else if !alreadyFinalized && r.Path != "" {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
 	}
-	if it.config.PostProcess && r.Err == nil && r.Bytes > 0 && e.ctx.Err() == nil {
+	if !alreadyFinalized && it.config.PostProcess && r.Err == nil && r.Bytes > 0 && e.ctx.Err() == nil {
 		e.processCopy(it.row.Streamer.ID, r.Path, it.config)
 	}
 	immediate := it.row.Status == "Finalizing" || it.row.Streamer.RecordingPaused || it.row.Streamer.Paused
@@ -973,6 +989,9 @@ func (e *Engine) fileChanges(it *item) {
 			for i := range d.Streamers {
 				if d.Streamers[i].ID == id {
 					d.Streamers[i].LastRecordedAt = change.StartedAt
+					if it.config.AutoPromote {
+						d.Streamers[i].LowPriority = false
+					}
 				}
 			}
 		}
@@ -989,9 +1008,31 @@ func (e *Engine) fileChanges(it *item) {
 				}
 			}
 		} else {
+			first := !it.recordNotified
 			it.row.Path, it.row.StartedAt = change.Path, change.StartedAt
 			it.row.Streamer.LastRecordedAt = change.StartedAt
-			e.log.Write("INFO", id, "Recording continued: "+change.Path)
+			if it.row.Status == "Waiting for guest media" {
+				it.row.Status = "Recording"
+			}
+			if first {
+				it.recordNotified = true
+				e.log.Write("INFO", id, "Recording started: "+change.Path)
+				select {
+				case e.events <- Event{it.row.Streamer.DisplayName(), id, change.Path}:
+				default:
+				}
+			} else {
+				e.log.Write("INFO", id, "Recording continued: "+change.Path)
+			}
+		}
+	}
+	if it.row.RoomKind == bigo.RoomAudioMultiGuest || it.row.RoomKind == bigo.RoomHybridMultiGuest {
+		it.row.Path, it.row.StartedAt = it.handle.File(), it.handle.Started()
+		if it.row.Status != "Finalizing" {
+			it.row.Status = "Recording"
+			if it.row.Path == "" {
+				it.row.Status = "Waiting for guest media"
+			}
 		}
 	}
 }

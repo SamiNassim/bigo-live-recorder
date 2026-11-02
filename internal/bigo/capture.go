@@ -2,6 +2,7 @@ package bigo
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -17,15 +18,19 @@ type Capture interface {
 
 type CapturePart struct {
 	io.ReadCloser
-	Reason string
-	Native bool
+	Reason         string
+	Native         bool
+	AudioOnly      bool
+	ParticipantUID uint32
 }
 
 func (p *CapturePart) NativeTimestamps() bool { return p.Native }
 
+var errMultiGuestCapture = errors.New("multi-guest rooms require separate participant captures")
+
 func OpenCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
-	if source.RoomKind == RoomAudioMultiGuest {
-		return nil, ErrAudioOnlyRoom
+	if source.RoomKind == RoomAudioMultiGuest || source.RoomKind == RoomHybridMultiGuest {
+		return nil, errMultiGuestCapture
 	}
 	if source.native != nil {
 		capture, err := openNativeCapture(ctx, client, source, referer, recovery)

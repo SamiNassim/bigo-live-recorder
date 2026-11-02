@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +68,12 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 		return nil, err
 	}
 	path := recordingPath(s, cfg, stamp, hex.EncodeToString(suffix[:]))
+	if part.ParticipantUID != 0 {
+		path = recordingPath(s, cfg, stamp, fmt.Sprintf("guest-%d_%s", part.ParticipantUID, hex.EncodeToString(suffix[:])))
+	}
+	if part.AudioOnly {
+		path = strings.TrimSuffix(path, ".mkv") + ".mka"
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fault.Action("could not create the recording folder; check disk space and folder permissions", err)
 	}

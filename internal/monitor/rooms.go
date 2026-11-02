@@ -45,7 +45,7 @@ func (e *Engine) audioRoomLocked(it *item, room string) {
 	it.pending = false
 	it.retryUntil = time.Time{}
 	if it.audioRoom != room || it.audioRoom == "" {
-		e.log.Write("INFO", it.row.Streamer.ID, "Live in an audio-only multi-guest room; video recording skipped. Monitoring remains enabled.")
+		e.log.Write("INFO", it.row.Streamer.ID, "Live in an audio-only multi-guest room. Recording is paused; monitoring remains enabled.")
 		it.audioRoom = room
 	}
 }

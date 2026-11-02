@@ -17,7 +17,7 @@ func TestNativeRoomClassificationRequiresBothExplicitFlags(t *testing.T) {
 		want  RoomKind
 	}{
 		{"normal video", 0, RoomUnknown},
-		{"camera-capable multi-guest", 1 << 2, RoomUnknown},
+		{"camera-capable multi-guest", 1 << 2, RoomHybridMultiGuest},
 		{"single voice", 1 << 4, RoomUnknown},
 		{"audio-only multi-guest", 1<<2 | 1<<4, RoomAudioMultiGuest},
 		{"audio-only with other flags", 1<<2 | 1<<4 | 1<<8, RoomAudioMultiGuest},
@@ -37,11 +37,11 @@ func TestNativeRoomClassificationRequiresBothExplicitFlags(t *testing.T) {
 	}
 }
 
-func TestAudioOnlyRoomNeverOpensMediaEvenWithStalePlayback(t *testing.T) {
+func TestMultiGuestRoomNeverUsesSingleStreamCaptureEvenWithStalePlayback(t *testing.T) {
 	source := Stream{Alive: 1, RoomKind: RoomAudioMultiGuest, HLS: "https://invalid.example/stale.m3u8", native: &pJoinChannelRes{}}
 	capture, err := OpenCapture(context.Background(), nil, source, "", StreamRecovery{})
-	if capture != nil || !errors.Is(err, ErrAudioOnlyRoom) {
-		t.Fatal("attempted recording for an audio-only room", err)
+	if capture != nil || !errors.Is(err, errMultiGuestCapture) {
+		t.Fatal("attempted a mixed recording for a multi-guest room", err)
 	}
 }
 

@@ -2,7 +2,6 @@ package bigo
 
 import (
 	"context"
-	"errors"
 
 	"bigo-live-recorder/internal/bigolistener"
 )
@@ -14,14 +13,16 @@ type RoomKind uint8
 const (
 	RoomUnknown RoomKind = iota
 	RoomAudioMultiGuest
+	RoomHybridMultiGuest
 )
-
-var ErrAudioOnlyRoom = errors.New("this is an audio-only multi-guest room; video recording is unavailable")
 
 func (r pJoinChannelRes) roomKind() RoomKind {
 	const multiGuest, voice = 1 << 2, 1 << 4
 	if r.flags&(multiGuest|voice) == multiGuest|voice {
 		return RoomAudioMultiGuest
+	}
+	if r.flags&multiGuest != 0 {
+		return RoomHybridMultiGuest
 	}
 	return RoomUnknown
 }

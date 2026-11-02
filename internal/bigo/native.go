@@ -51,10 +51,14 @@ func (c *Client) OriginStream(ctx context.Context, source Stream, hub *bigoliste
 		return Stream{}, err
 	}
 	source.RoomKind = response.roomKind()
-	if source.RoomKind == RoomAudioMultiGuest {
-		// Voice rooms still advertise video proxies. Their presence does not
-		// mean there is a video track to record.
-		source.native, source.HLS, source.CDN = nil, "", nil
+	if source.RoomKind == RoomAudioMultiGuest || source.RoomKind == RoomHybridMultiGuest {
+		if len(response.cookie) == 0 || len(response.cookie) > 65535 || len(response.media) == 0 {
+			return Stream{}, ErrOriginUnavailable
+		}
+		// Individual sources require native transport. Never substitute the
+		// web player's mixed stream for a participant's original media.
+		source.native, source.HLS, source.CDN = &response, "", nil
+		source.Quality = "origin"
 		return source, nil
 	}
 	if len(response.cookie) == 0 || len(response.cookie) > 65535 || len(response.video) == 0 || len(response.media) == 0 {
