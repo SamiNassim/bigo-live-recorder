@@ -185,14 +185,34 @@ func decodeNativeVideo(data []byte) (nativeVideoPart, error) {
 	return p, r.err
 }
 
+type nativeAudioSample struct {
+	data  []byte
+	flags byte
+}
+type nativeAudioPacket struct {
+	owner, sequence, pts uint32
+	codec                byte
+	count                int
+	samples              [7]nativeAudioSample
+}
+
 func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
+	packet, err := parseNativeAudio(data)
+	if err != nil {
+		return nil, err
+	}
+	return decodeNativeAAC(packet)
+}
+
+func parseNativeAudio(data []byte) (nativeAudioPacket, error) {
+	var packet nativeAudioPacket
 	r := nativeReader{data: data}
 	r.u16()
 	f, g := r.u8(), r.u8()
 	if g&128 == 0 {
-		return nil, errors.New("unsupported BIGO legacy audio header")
+		return nativeAudioPacket{}, errors.New("unsupported BIGO legacy audio header")
 	}
-	r.u32() // packet sequence
+	packet.sequence = r.u32()
 	if g&2 != 0 {
 		r.u32()
 	}
@@ -204,7 +224,7 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 		pts = r.u32()
 	}
 	if g&16 != 0 {
-		r.u32()
+		packet.owner = r.u32()
 	}
 	if g&8 != 0 {
 		r.u32()
@@ -213,7 +233,7 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 	codec := r.u8()
 	r.u32()
 	if codec != 6 && codec != 7 {
-		return nil, fmt.Errorf("unsupported BIGO native audio codec %d", codec)
+		return nativeAudioPacket{}, fmt.Errorf("unsupported BIGO native audio codec %d", codec)
 	}
 	if f&1 != 0 {
 		ext := r.u8()
@@ -240,7 +260,13 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 			r.u32()
 		}
 		if e&64 != 0 {
-			r.take(24)
+			owner := r.u64()
+			r.take(16)
+			if owner <= uint64(^uint32(0)) {
+				packet.owner = uint32(owner)
+			} else {
+				packet.owner = 0
+			}
 		}
 		if e&128 != 0 {
 			e2 := r.u8()
@@ -271,47 +297,43 @@ func decodeNativeAudio(data []byte) ([]nativeMediaFrame, error) {
 			r.take(skip - r.off)
 		}
 	}
-	// Each packet carries at most seven independently framed AAC samples. Keep
-	// valid samples even when another sample in the packet is malformed.
-	type sample struct {
-		data []byte
-		rate int
-	}
-	var samples [7]sample
-	count, rate := int(f>>5), 0
-	var invalid error
-	for i := range count {
+	packet.pts, packet.codec = pts, codec
+	packet.count = int(f >> 5)
+	for i := range packet.count {
 		flags := r.u8()
 		length := r.u16()
 		if length&0xfc00 != 0xfc00 {
-			return nil, errors.New("invalid BIGO AAC frame length")
+			return nativeAudioPacket{}, errors.New("invalid BIGO audio frame length")
 		}
-		frame := r.take(int(length & 1023))
-		if r.err != nil {
-			return nil, r.err
-		}
-		sampleRate, err := nativeAACRate(frame)
+		packet.samples[i] = nativeAudioSample{flags: flags, data: r.take(int(length & 1023))}
+	}
+	return packet, r.err
+}
+
+func decodeNativeAAC(packet nativeAudioPacket) ([]nativeMediaFrame, error) {
+	var rates [7]int
+	rate := 0
+	var invalid error
+	for i, sample := range packet.samples[:packet.count] {
+		sampleRate, err := nativeAACRate(sample.data)
 		if err != nil {
-			invalid = errors.Join(invalid, fmt.Errorf("%w: codec=%d flags=%#x bytes=%d: %v", errNativeAACFrame, codec, flags, len(frame), err))
+			invalid = errors.Join(invalid, fmt.Errorf("%w: codec=%d flags=%#x bytes=%d: %v", errNativeAACFrame, packet.codec, sample.flags, len(sample.data), err))
 		} else {
 			rate = sampleRate
 		}
-		samples[i] = sample{data: frame, rate: sampleRate}
-	}
-	if r.err != nil {
-		return nil, r.err
+		rates[i] = sampleRate
 	}
 	var frames []nativeMediaFrame
-	var elapsed uint64 // nanoseconds; include rejected samples in the timeline.
-	for _, sample := range samples[:count] {
-		if sample.rate != 0 {
-			rate = sample.rate
-			timestamp := pts + uint32(elapsed/uint64(time.Millisecond))
-			frames = append(frames, nativeMediaFrame{data: sample.data, pts: timestamp, dts: timestamp})
+	var elapsed uint64
+	for i, sample := range packet.samples[:packet.count] {
+		if rates[i] != 0 {
+			rate = rates[i]
+			timestamp := packet.pts + uint32(elapsed/uint64(time.Millisecond))
+			frames = append(frames, nativeMediaFrame{data: sample.data, pts: timestamp, dts: timestamp, codec: 6})
 		}
 		if rate != 0 {
 			blocks := uint64(1)
-			if sample.rate != 0 {
+			if rates[i] != 0 {
 				blocks += uint64(sample.data[6] & 3)
 			}
 			elapsed += blocks * 1024 * uint64(time.Second) / uint64(rate)

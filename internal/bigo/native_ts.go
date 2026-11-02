@@ -28,7 +28,7 @@ func nativeVideoType(codec byte) (byte, error) {
 	}
 }
 
-// nativeTSMux packages Annex B video and ADTS audio without changing either
+// nativeTSMux packages Annex B video and AAC or Opus audio without changing either
 // elementary stream. This gives FFmpeg one timestamped input on every OS.
 type nativeTSMux struct {
 	out                          io.Writer
@@ -43,6 +43,9 @@ type nativeTSMux struct {
 	lastAudioPTS                 int64
 	lastVideoTime, lastAudioTime time.Time
 	noAudio                      bool
+	audioOnly, opus              bool
+	startWithAudio               bool
+	videoCodec                   byte
 }
 
 func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
@@ -55,8 +58,11 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		}
 	}
 	if !m.started {
-		if !f.video || !f.key {
+		if !m.audioOnly && !m.startWithAudio && (!f.video || !f.key) {
 			return nil
+		}
+		if !f.video && !m.audioOnly {
+			codec = m.videoCodec
 		}
 		m.started = true
 		m.base = f.pts
@@ -83,6 +89,9 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 			m.clock.mu.Unlock()
 		}
 		m.startPTS = int64(int32(f.pts-m.base))*90 + m.offset
+		if m.startWithAudio {
+			m.startPTS = 0
+		}
 	}
 	pts := int64(int32(f.pts-m.base))*90 + m.offset
 	// Audio servers can replay cached samples when a media socket reconnects.
@@ -134,6 +143,9 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		m.lastTables = pts
 	}
 	pid, id := uint16(257), byte(0xc0)
+	if m.opus {
+		id = 0xbd
+	}
 	if f.video {
 		pid, id = 256, 0xe0
 	}
@@ -145,14 +157,18 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	} else {
 		pes = append(pes, tsTimestamp(pts, 2)...)
 	}
-	pes = append(pes, f.data...)
+	data := f.data
+	if !f.video && m.opus {
+		data = opusAccessUnit(data)
+	}
+	pes = append(pes, data...)
 	if !f.video {
 		if len(pes)-6 > 65535 {
 			return errors.New("BIGO native audio frame is too large")
 		}
 		binary.BigEndian.PutUint16(pes[4:], uint16(len(pes)-6))
 	}
-	if err := m.packets(pid, pes, f.video, f.key, dts); err != nil {
+	if err := m.packets(pid, pes, f.video || m.audioOnly, f.key, dts); err != nil {
 		return err
 	}
 	if f.video {
@@ -195,12 +211,22 @@ func (m *nativeTSMux) tables() error {
 	if err := m.section(0, pat); err != nil {
 		return err
 	}
-	videoType := m.codec
-	pmt := []byte{2, 0xb0, 23, 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0, 0, videoType, 0xe1, 0, 0xf0, 0, 0x0f, 0xe1, 1, 0xf0, 0}
-	if m.noAudio {
-		pmt = pmt[:len(pmt)-5]
-		pmt[2] -= 5
+	pcr := byte(0)
+	if m.audioOnly {
+		pcr = 1
 	}
+	pmt := []byte{2, 0xb0, 0, 0, 1, 0xc1, 0, 0, 0xe1, pcr, 0xf0, 0}
+	if !m.audioOnly {
+		pmt = append(pmt, m.codec, 0xe1, 0, 0xf0, 0)
+	}
+	if !m.noAudio {
+		if m.opus {
+			pmt = append(pmt, 0x06, 0xe1, 1, 0xf0, 10, 0x05, 4, 'O', 'p', 'u', 's', 0x7f, 2, 0x80, 2)
+		} else {
+			pmt = append(pmt, 0x0f, 0xe1, 1, 0xf0, 0)
+		}
+	}
+	pmt[2] = byte(len(pmt) + 1) // Section length includes its four-byte CRC.
 	return m.section(4096, pmt)
 }
 
