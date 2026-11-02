@@ -75,7 +75,7 @@ func (a *application) streamers(c *ui.Context) {
 						color = t.Success
 					case "Monitoring paused":
 						color = t.Warning
-					case "Checking", "Starting":
+					case "Checking", "Starting", "Waiting for guest media":
 						color = t.Accent
 					case "Needs attention":
 						color = t.Warning
@@ -91,9 +91,9 @@ func (a *application) streamers(c *ui.Context) {
 						label := r.Status
 						audioRoom := r.RoomKind == bigo.RoomAudioMultiGuest
 						if audioRoom {
-							detail += "\nAudio-only multi-guest room. Video recording is skipped; monitoring remains enabled."
+							detail += "\nAudio-only multi-guest room. Each speaker's original audio is saved separately when recording is enabled."
 						}
-						if cfg.NativeListening && !cfg.PollingBackup && (r.Streamer.RecordingPaused || audioRoom) {
+						if cfg.NativeListening && !cfg.PollingBackup && r.Streamer.RecordingPaused {
 							if label == "Live" {
 								label = "Live (last check)"
 							}
@@ -101,7 +101,11 @@ func (a *application) streamers(c *ui.Context) {
 						}
 						ui.Text(c, "●  "+label).FontSize(12).TextColor(color).SingleLine().Tooltip(detail)
 						if audioRoom {
-							ui.Text(c, "Audio-only multi-guest room").FontSize(10).TextColor(t.TextMuted).SingleLine().Tooltip("Video recording is skipped for this room type.")
+							ui.Text(c, "Multi-guest room").FontSize(10).TextColor(t.TextMuted).SingleLine().Tooltip("Audio-only room. Each speaker's original audio is saved separately.")
+						} else if r.RoomKind == bigo.RoomHybridMultiGuest {
+							ui.Text(c, "Multi-guest room").FontSize(10).TextColor(t.TextMuted).SingleLine().Tooltip("Each participant's original video and audio are saved separately.")
+						} else if r.Live {
+							ui.Text(c, "Normal room").FontSize(10).TextColor(t.TextMuted).SingleLine()
 						}
 						if r.Streamer.RecordingPaused && !r.Streamer.Paused {
 							ui.Text(c, "Recording paused").FontSize(10).TextColor(t.Warning)
