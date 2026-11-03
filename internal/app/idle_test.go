@@ -77,7 +77,10 @@ func TestHiddenTablesReleaseObsoleteSnapshotsAndMenus(t *testing.T) {
 	if a.logRowsCache.source != nil || a.logRowsCache.rows != nil || a.recordRows.source != nil || a.recordRows.rows != nil {
 		t.Fatal("obsolete table snapshots remain retained")
 	}
-	if a.logList.Key != nil || a.logList.CellMenu != nil || a.recordList.Key != nil || a.recordList.CellMenu != nil {
+	if a.recordTree.valid || a.recordTree.records != nil || a.recordTree.groups != nil {
+		t.Fatal("a hidden recording tree retained obsolete paths")
+	}
+	if a.logList.Key != nil || a.logList.CellMenu != nil || a.recordList.List.Key != nil || a.recordList.List.CellMenu != nil {
 		t.Fatal("a hidden row callback retained obsolete entries")
 	}
 	a.page = "logs"

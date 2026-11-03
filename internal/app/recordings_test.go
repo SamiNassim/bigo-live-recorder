@@ -125,9 +125,9 @@ func TestBroadcastReplayMenuReflectsProcessingAndCompletion(t *testing.T) {
 		t.Helper()
 		tt.CloseMenu()
 		tt.Frame()
-		row, ok := tt.Find(r.Name)
+		row, ok := tt.Find(b.StreamerID)
 		if !ok {
-			t.Fatal("guest recording missing")
+			t.Fatal("broadcast group missing")
 		}
 		tt.RightClickAt(row.X+row.W/2, row.Y+row.H/2)
 		return tt.Menu()

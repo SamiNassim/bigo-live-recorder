@@ -33,31 +33,11 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 	if r.BroadcastID != "" {
 		data := a.store.Data()
 		for _, broadcast := range data.Broadcasts {
-			if broadcast.ID != r.BroadcastID {
-				continue
+			if broadcast.ID == r.BroadcastID {
+				m.Separator()
+				a.roomReplayMenu(m, broadcast, r.Path, data.Recordings)
+				break
 			}
-			m.Separator()
-			if broadcast.ReplayPath != "" && broadcast.ReplayPath != r.Path {
-				if m.Item("Open room replay").Disabled(a.busy).Chosen() {
-					a.work(func() error { return mygo.Shell.OpenPath(broadcast.ReplayPath) })
-				}
-			}
-			label := "Assemble room replay"
-			if broadcast.ReplayPending {
-				label = "Room replay is processing…"
-			} else if broadcast.ReplayPath != "" {
-				label = "Rebuild room replay"
-			} else if broadcast.ReplayError != "" {
-				label = "Retry room replay"
-			}
-			active := false
-			for _, raw := range data.Recordings {
-				active = active || raw.BroadcastID == broadcast.ID && raw.EndedAt.IsZero()
-			}
-			if m.Item(label).Disabled(a.busy || a.preview || a.engine == nil || broadcast.ReplayPending || active).Chosen() {
-				a.work(func() error { return a.engine.QueueReplay(broadcast.ID) })
-			}
-			break
 		}
 	}
 	m.Separator()
@@ -97,4 +77,46 @@ func (a *application) recordingHistoryDialog(c *ui.Context) {
 			}
 		})
 	})
+}
+
+func (a *application) roomReplayMenu(m *ui.Menu, broadcast state.Broadcast, currentPath string, recordings []state.Recording) {
+	if broadcast.ReplayPath != "" && broadcast.ReplayPath != currentPath {
+		if m.Item("Open room replay").Disabled(a.busy).Chosen() {
+			a.work(func() error { return mygo.Shell.OpenPath(broadcast.ReplayPath) })
+		}
+	}
+	label := "Assemble room replay"
+	if broadcast.ReplayPending {
+		label = "Room replay is processing…"
+	} else if broadcast.ReplayPath != "" {
+		label = "Rebuild room replay"
+	} else if broadcast.ReplayError != "" {
+		label = "Retry room replay"
+	}
+	active := false
+	for _, raw := range recordings {
+		active = active || raw.BroadcastID == broadcast.ID && raw.EndedAt.IsZero()
+	}
+	if m.Item(label).Disabled(a.busy || a.preview || a.engine == nil || broadcast.ReplayPending || active).Chosen() {
+		a.work(func() error { return a.engine.QueueReplay(broadcast.ID) })
+	}
+}
+
+func (a *application) recordingGroupMenu(m *ui.Menu, key recordingKey, group recordingGroup, services ui.Services) {
+	label := "Expand recordings"
+	if a.recordList.Open.Has(key) {
+		label = "Collapse recordings"
+	}
+	if m.Item(label).Chosen() {
+		a.toggleRecordingGroup(key)
+	}
+	m.Separator()
+	if m.Item("Open broadcast folder").Disabled(group.broadcast.Directory == "").Chosen() {
+		a.openFolder(group.broadcast.Directory)
+	}
+	if m.Item("Copy folder path").Disabled(group.broadcast.Directory == "").Chosen() {
+		services.WriteClipboard(group.broadcast.Directory)
+	}
+	m.Separator()
+	a.roomReplayMenu(m, group.broadcast, "", a.data.Recordings)
 }

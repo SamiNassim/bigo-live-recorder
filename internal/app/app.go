@@ -52,15 +52,18 @@ type application struct {
 	streamRows    tableCache[monitor.Row]
 	logRowsCache  tableCache[logging.Entry]
 	recordRows    tableCache[state.Recording]
+	recordTree    recordingTree
 
-	page                            string
-	query, status, priority, order  string
-	logQuery, level                 string
-	streamList, logList, recordList ui.ListState
-	settingsScroll                  ui.ScrollState
-	accountSettingsRequested        bool
-	clearHistoryOpen                bool
-	toasts                          []string
+	page                           string
+	query, status, priority, order string
+	logQuery, level                string
+	streamList, logList            ui.ListState
+	recordList                     ui.OutlineState[recordingKey]
+	recordSelection                int
+	settingsScroll                 ui.ScrollState
+	accountSettingsRequested       bool
+	clearHistoryOpen               bool
+	toasts                         []string
 
 	addOpen, renameOpen, removeOpen              bool
 	addID, addName                               string
@@ -82,7 +85,7 @@ type application struct {
 
 func newApplication(store *state.Store, log *logging.Log) *application {
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &application{store: store, log: log, ctx: ctx, cancel: cancel, cfg: store.Config(), page: "streamers", status: "All statuses", priority: "All priorities", order: "Last recorded", level: "All levels"}
+	a := &application{store: store, log: log, ctx: ctx, cancel: cancel, cfg: store.Config(), page: "streamers", status: "All statuses", priority: "All priorities", order: "Last recorded", level: "All levels", recordSelection: -1}
 	a.data, a.dataRevision = store.DataSince(0)
 	a.logo, _ = decodeThumbnail(assets.Icon, logoPixels)
 	a.avatars = make(map[string]*ui.Bitmap)
@@ -114,6 +117,7 @@ func (a *application) refreshVisible() bool {
 	listener := a.snapshot.Listener
 	queueTargets := a.snapshot.QueueTargets
 	records := a.data.Recordings
+	broadcasts := a.data.Broadcasts
 	dataRevision, logRevision := a.dataRevision, a.logRevision
 	snapshotChanged := false
 	if a.engine != nil {
@@ -129,8 +133,11 @@ func (a *application) refreshVisible() bool {
 	if snapshotChanged && a.page != "streamers" && a.streamRows.invalidate(a.snapshot.Rows) {
 		a.streamList.Key, a.streamList.CellMenu = nil, nil
 	}
-	if dataRevision != a.dataRevision && a.page != "recordings" && a.recordRows.invalidate(a.data.Recordings) {
-		a.recordList.Key, a.recordList.CellMenu = nil, nil
+	if dataRevision != a.dataRevision && a.page != "recordings" {
+		if a.recordRows.invalidate(a.data.Recordings) || !slices.Equal(broadcasts, a.data.Broadcasts) {
+			a.recordTree = recordingTree{}
+			a.recordList.List.Key, a.recordList.List.CellMenu, a.recordList.List.Label = nil, nil, nil
+		}
 	}
 	if logRevision != a.logRevision && a.page != "logs" && a.logRowsCache.invalidate(a.logs) {
 		a.logList.Key, a.logList.CellMenu = nil, nil
@@ -141,7 +148,7 @@ func (a *application) refreshVisible() bool {
 	case "logs":
 		return sidebarChanged || logRevision != a.logRevision
 	case "recordings":
-		return sidebarChanged || dataRevision != a.dataRevision && !slices.Equal(records, a.data.Recordings)
+		return sidebarChanged || dataRevision != a.dataRevision && (!slices.Equal(records, a.data.Recordings) || !slices.Equal(broadcasts, a.data.Broadcasts))
 	case "settings":
 		return sidebarChanged || queueTargets != a.snapshot.QueueTargets
 	default:

@@ -3,8 +3,6 @@ package app
 import (
 	"fmt"
 	"math"
-	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -254,57 +252,6 @@ func (a *application) logsPage(c *ui.Context) {
 		}).Grow(1).MinHeight(0).FillWidth()
 		ui.Divider(c)
 		ui.Text(c, fmt.Sprintf("%d matching · %d retained · newest first · right-click for details · disk logs rotate at 15 MB total", len(entries), len(a.logs))).Padding(14, 18).FontSize(11).TextColor(t.TextMuted)
-	})
-}
-
-func (a *application) recordings(c *ui.Context) {
-	t := c.Theme()
-	hasCompleted := slices.ContainsFunc(a.data.Recordings, func(r state.Recording) bool { return !r.EndedAt.IsZero() })
-	header(c, "Recordings", "Original quality. Local files. Short-cluster Matroska by default.", func() {
-		if ui.Button(c, "Clear history…").Disabled(a.busy || a.preview || !hasCompleted).Clicked() {
-			a.clearHistoryOpen = true
-		}
-		if ui.PrimaryButton(c, "Open recordings folder").Clicked() {
-			a.openFolder(a.cfg.RecordingPath)
-		}
-	})
-	recordings := a.recordingRows()
-	a.recordList.Key = func(i int) any { return recordings[i].ID }
-	a.recordList.KeepOffset = true
-	services := c.Services()
-	a.recordList.CellMenu = func(m *ui.Menu, row, _ int) { a.recordingMenu(m, recordings[row], services) }
-	first, last := a.recordList.Visible()
-	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
-		ui.Table(c, &a.recordList, []ui.TableColumn{{Title: "Streamer", Width: 150}, {Title: "Started", Width: 150}, {Title: "Duration", Width: 90}, {Title: "Size", Width: 85}, {Title: "File", MinWidth: 140}, {Title: "", ID: "open", Width: 75}}, len(recordings), func(row, col int) {
-			r := recordings[row]
-			switch col {
-			case 0:
-				ui.Text(c, r.Name).FontWeight(600).SingleLine()
-			case 1:
-				ui.Text(c, timestamp(r.StartedAt)).FontSize(11)
-			case 2:
-				d := c.Now().Sub(r.StartedAt)
-				if !r.EndedAt.IsZero() {
-					d = r.EndedAt.Sub(r.StartedAt)
-				} else if row >= first && row <= last {
-					refreshClock(c, d, false)
-				}
-				ui.Text(c, duration(d)).FontSize(11)
-			case 3:
-				label := bytesLabel(r.Bytes)
-				if r.EndedAt.IsZero() {
-					label = "Recording…"
-				}
-				ui.Text(c, label).FontSize(11)
-			case 4:
-				ui.Text(c, filepath.Base(r.Path)).FontSize(11).SingleLine().Tooltip(r.Path + "\n" + r.ProcessedPath + "\n" + r.Error)
-			case 5:
-				if ui.Button(c, "Show").Clicked() {
-					a.reveal(r.Path)
-				}
-			}
-		}).Grow(1).MinHeight(0).FillWidth()
-		ui.Text(c, fmt.Sprintf("%d recordings in history · clearing history never deletes files", len(recordings))).FontSize(11).TextColor(t.TextMuted).Padding(14, 18)
 	})
 }
 
