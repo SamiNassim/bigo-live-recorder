@@ -47,6 +47,7 @@ type guestRoom struct {
 	lastMedia atomic.Int64
 	lastVideo atomic.Int64
 	members   map[uint32]*guestMember // Owned by dispatch until done closes.
+	epoch     time.Time
 }
 
 // OpenGuestRoom subscribes to original participant feeds using the room ticket
@@ -57,7 +58,7 @@ func OpenGuestRoom(parent context.Context, source Stream, recovery StreamRecover
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &guestRoom{parent: parent, ctx: ctx, cancel: cancel, recovery: recovery, source: source,
-		frames: make(chan guestFrame, 256), guests: make(chan Participant, 64), done: make(chan struct{}), members: make(map[uint32]*guestMember)}
+		frames: make(chan guestFrame, 256), guests: make(chan Participant, 64), done: make(chan struct{}), members: make(map[uint32]*guestMember), epoch: time.Now()}
 	r.lastMedia.Store(time.Now().UnixNano())
 	r.workers.Add(2)
 	if source.RoomKind == RoomHybridMultiGuest && len(source.native.video) > 0 {
@@ -270,6 +271,7 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 			return err
 		}
 		packet, err := readNativePacket(conn)
+		received := time.Since(r.epoch).Nanoseconds()
 		if err != nil {
 			return err
 		}
@@ -290,6 +292,7 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 				return err
 			}
 			uid = part.owner
+			part.received = received
 			if uid == 0 {
 				continue
 			}
@@ -340,6 +343,9 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 			}
 		}
 		for _, frame := range frames {
+			if !frame.video {
+				frame.received = received
+			}
 			if frame.video {
 				r.lastVideo.Store(time.Now().UnixNano())
 			}

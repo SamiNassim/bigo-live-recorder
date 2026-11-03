@@ -65,6 +65,7 @@ type nativeMediaFrame struct {
 	video, key bool
 	codec      byte
 	reset      bool
+	received   int64
 }
 
 type nativeVideoPart struct {
@@ -74,6 +75,7 @@ type nativeVideoPart struct {
 	codec            byte
 	mode             byte
 	data             []byte
+	received         int64
 }
 
 func decodeNativeVideo(data []byte) (nativeVideoPart, error) {

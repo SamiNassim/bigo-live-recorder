@@ -84,6 +84,7 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 		c.queue.finish(terminal)
 	}
 	c.clock = &nativeTSClock{}
+	c.timing = &CaptureTiming{Epoch: c.epoch}
 	reader, writer := io.Pipe()
 	done := make(chan struct{})
 	c.mu.Lock()
@@ -104,14 +105,14 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 	} else {
 		go c.writeGuestAudio(writer, done, config)
 	}
-	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, AudioOnly: !firstVideo.key}, nil
+	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, AudioOnly: !firstVideo.key, Timing: c.timing}, nil
 }
 
 func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{}, config nativeAudioConfig) {
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
-	mux := nativeTSMux{out: writer, clock: c.clock, audioOnly: true, opus: config[0] == 7}
+	mux := nativeTSMux{out: writer, clock: c.clock, audioOnly: true, opus: config[0] == 7, timing: c.timing}
 	for {
 		f, err := c.nextFrame(c.ctx)
 		if err != nil {
@@ -122,7 +123,7 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			return
 		}
 		if f.reset {
-			mux = nativeTSMux{out: writer, clock: c.clock, audioOnly: true, opus: config[0] == 7}
+			mux = nativeTSMux{out: writer, clock: c.clock, audioOnly: true, opus: config[0] == 7, timing: c.timing}
 			continue
 		}
 		if f.video {
@@ -148,8 +149,28 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			return
 		}
 		if err := mux.writeFrame(f); err != nil {
+			var clockErr nativeClockError
+			if errors.As(err, &clockErr) {
+				err = c.continueGuestClock(f)
+			}
 			writer.CloseWithError(err)
 			return
 		}
 	}
+}
+
+// A guest has no private socket to reconnect: the room owns its transports.
+// Retain the changed frame and continue in a fresh file instead of waiting
+// forever for a reset marker that only ordinary single-source sessions emit.
+func (c *nativeCapture) continueGuestClock(f nativeMediaFrame) error {
+	c.clearPreroll()
+	tail := newNativeFrameQueue(1 << 20)
+	if err := tail.push(f); err != nil {
+		tail.close()
+		return err
+	}
+	tail.finish(nil)
+	c.deferred = append([]*nativeFrameQueue{tail}, c.deferred...)
+	c.reason = "The guest's media clock restarted; continuing in a new original recording"
+	return nil
 }

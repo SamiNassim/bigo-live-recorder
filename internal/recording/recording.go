@@ -95,14 +95,14 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	return h, err
 }
 
-func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string, s state.Streamer, cfg state.Config, capture bigo.Capture, report func(string, string)) (*Handle, error) {
+func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string, s state.Streamer, cfg state.Config, capture bigo.Capture, report func(string, string), settings ...captureOptions) (*Handle, error) {
 	part, err := capture.Next(ctx)
 	if err != nil {
 		cancel()
 		capture.Close()
 		return nil, err
 	}
-	current, err := startFile(ffmpeg, s, cfg, part)
+	current, err := startFile(ffmpeg, s, cfg, part, settings...)
 	if err != nil {
 		cancel()
 		part.Close()
@@ -110,7 +110,7 @@ func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string,
 		return nil, err
 	}
 	h := &Handle{Path: current.path, StartedAt: current.started, currentPath: current.path, currentStarted: current.started, cancel: cancel, done: make(chan struct{})}
-	go h.record(ctx, capture, current, ffmpeg, s, cfg, report)
+	go h.record(ctx, capture, current, ffmpeg, s, cfg, report, settings...)
 	return h, nil
 }
 

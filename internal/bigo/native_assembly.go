@@ -14,6 +14,7 @@ type nativeVideoAssembly struct {
 	count, bytes int
 	key          bool
 	codec        byte
+	received     int64
 }
 
 // Complete frames wait behind earlier fragments so a delayed keyframe reaches
@@ -82,6 +83,9 @@ func (a *nativeVideoAssembler) add(p nativeVideoPart) ([]nativeMediaFrame, error
 		}
 	}
 	if _, exists := f.parts[p.index]; !exists {
+		if f.received == 0 || (p.received > 0 && p.received < f.received) {
+			f.received = p.received
+		}
 		if len(p.data) > maxNativeFrameBytes-a.bytes {
 			if a.started || len(p.data) > maxNativeFrameBytes {
 				return nil, errors.New("BIGO video fragment buffer exhausted")
@@ -140,7 +144,7 @@ func (a *nativeVideoAssembler) drain() []nativeMediaFrame {
 		if f.data == nil {
 			break
 		}
-		ready = append(ready, nativeMediaFrame{data: f.data[9:], pts: binary.LittleEndian.Uint32(f.data), dts: binary.LittleEndian.Uint32(f.data[4:]), video: true, key: f.key, codec: f.codec})
+		ready = append(ready, nativeMediaFrame{data: f.data[9:], pts: binary.LittleEndian.Uint32(f.data), dts: binary.LittleEndian.Uint32(f.data[4:]), video: true, key: f.key, codec: f.codec, received: f.received})
 		a.last = id
 		a.bytes -= f.bytes
 		delete(a.frames, id)

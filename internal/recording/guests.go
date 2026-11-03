@@ -11,6 +11,7 @@ import (
 	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/state"
+	"bigo-live-recorder/internal/timeline"
 )
 
 type participantCapture struct {
@@ -44,6 +45,23 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 		stop := context.AfterFunc(ctx, func() { room.Close() })
 		defer stop()
 		defer room.Close()
+		var timing *timeline.Journal
+		var timingWarning sync.Once
+		reportTiming := func(err error) {
+			if report != nil && err != nil {
+				timingWarning.Do(func() {
+					report("WARN", "Could not preserve the replay timeline. Original guest recordings continue; check available disk space and folder permissions.")
+				})
+			}
+		}
+		if options.Broadcast.Directory != "" {
+			var err error
+			timing, err = timeline.Open(options.Broadcast.Directory, options.Broadcast.ID)
+			reportTiming(err)
+			if timing != nil {
+				defer timing.Close()
+			}
+		}
 		var workers sync.WaitGroup
 		var roomErr error
 		ended := false
@@ -68,7 +86,7 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 				capture := participantCapture{Capture: participant.Capture, uid: participant.UID, profile: profile, broadcast: options.Broadcast}
 				// The room owns cancellation. Closing one source closes only
 				// its capture; it must never cancel its sibling recorders.
-				child, err := startCapture(ctx, func() {}, ffmpeg, streamer, cfg, capture, nil)
+				child, err := startCapture(ctx, func() {}, ffmpeg, streamer, cfg, capture, nil, captureOptions{timing: timing, reportTiming: reportTiming})
 				if err != nil {
 					if ctx.Err() == nil && !errors.Is(err, io.EOF) && report != nil {
 						report("WARN", fmt.Sprintf("Could not start guest %d: %s", participant.UID, fault.Reason(err)))

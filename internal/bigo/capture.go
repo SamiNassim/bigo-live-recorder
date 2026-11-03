@@ -27,6 +27,7 @@ type CapturePart struct {
 	ParticipantIdentityVersion int
 	BroadcastID                string
 	Directory                  string
+	Timing                     *CaptureTiming
 }
 
 func (p *CapturePart) NativeTimestamps() bool { return p.Native }

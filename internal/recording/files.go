@@ -16,6 +16,7 @@ import (
 	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/state"
+	"bigo-live-recorder/internal/timeline"
 )
 
 // FileChange reports ordinary independent recordings created by a continuous
@@ -55,18 +56,26 @@ func (f *fileWriter) change(result *Result) FileChange {
 }
 
 type fileWriter struct {
-	path    string
-	started time.Time
-	part    *bigo.CapturePart
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	copied  chan error
-	waited  chan error
-	stderr  *tailBuffer
-	exitErr *error
+	path       string
+	started    time.Time
+	part       *bigo.CapturePart
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	copied     chan error
+	waited     chan error
+	stderr     *tailBuffer
+	exitErr    *error
+	timing     *timeline.Frames
+	journal    *timeline.Journal
+	timingOnce sync.Once
 }
 
-func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.CapturePart) (*fileWriter, error) {
+type captureOptions struct {
+	timing       *timeline.Journal
+	reportTiming func(error)
+}
+
+func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.CapturePart, settings ...captureOptions) (*fileWriter, error) {
 	stamp := time.Now()
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
@@ -109,6 +118,19 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 		return nil, fault.Action("FFmpeg could not start; check its installation in Settings", err)
 	}
 	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr}
+	if len(settings) > 0 && settings[0].timing != nil && part.Timing != nil && !part.Timing.Epoch.IsZero() {
+		options := settings[0]
+		f.journal = options.timing
+		entry := timeline.Entry{File: filepath.Base(path), UID: part.ParticipantUID, ID: part.ParticipantID, Name: part.ParticipantName, Epoch: part.Timing.Epoch, At: stamp}
+		f.timing, err = options.timing.Create(entry, options.reportTiming)
+		if err != nil {
+			if options.reportTiming != nil {
+				options.reportTiming(err)
+			}
+		} else {
+			part.Timing.Observe(func(sample bigo.MediaTime) { f.timing.Write(timeline.Frame(sample)) })
+		}
+	}
 	go func() { _, err := io.Copy(stdin, part); stdin.Close(); part.Close(); f.copied <- err }()
 	go func() { f.waited <- cmd.Wait() }()
 	return f, nil
@@ -138,13 +160,24 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
 func (f *fileWriter) finish(copyErr error, canceled bool) Result {
 	f.stdin.Close()
 	f.part.Close()
+	f.timingOnce.Do(func() {
+		if f.timing != nil {
+			f.part.Timing.Observe(nil)
+			err := f.timing.Close()
+			entry := timeline.Entry{Kind: "file_end", File: filepath.Base(f.path), At: time.Now()}
+			if err != nil {
+				entry.Error = err.Error()
+			}
+			f.journal.Append(entry)
+		}
+	})
 	if f.exitErr != nil {
 		return f.result(copyErr, *f.exitErr, canceled)
 	}
 	return f.result(copyErr, finish(f.cmd, f.waited), canceled)
 }
 
-func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *fileWriter, ffmpeg string, s state.Streamer, cfg state.Config, report func(string, string)) {
+func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *fileWriter, ffmpeg string, s state.Streamer, cfg state.Config, report func(string, string), settings ...captureOptions) {
 	var finalizers sync.WaitGroup
 	defer func() { h.cancel(); capture.Close(); finalizers.Wait(); close(h.done) }()
 	// Finalizers run concurrently with the next writer. Bound process overlap
@@ -186,7 +219,7 @@ func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *file
 			h.result = current.finish(nil, true)
 			return
 		}
-		next, err := startFile(ffmpeg, s, cfg, part)
+		next, err := startFile(ffmpeg, s, cfg, part, settings...)
 		if err != nil {
 			<-finishing
 			part.Close()

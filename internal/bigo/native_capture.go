@@ -33,6 +33,8 @@ type nativeCapture struct {
 	replacement       Capture
 	replacementReason bool
 	guest             bool
+	epoch             time.Time
+	timing            *CaptureTiming
 }
 
 type nativeVideoGOP struct {
@@ -391,7 +393,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
-	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, startWithAudio: c.guest, videoCodec: codec}
+	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, startWithAudio: c.guest, videoCodec: codec, timing: c.timing}
 	draining := false
 	warnedPrefix := false
 	for {
@@ -405,7 +407,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 		}
 		if f.reset {
 			c.clearPreroll()
-			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7}
+			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, timing: c.timing}
 			draining = false
 			continue
 		}
@@ -460,6 +462,11 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 		if err = mux.writeFrame(f); err != nil {
 			if c.ctx.Err() != nil || errors.Is(err, io.ErrClosedPipe) {
 				writer.CloseWithError(err)
+				return
+			}
+			var clockErr nativeClockError
+			if c.guest && errors.As(err, &clockErr) {
+				writer.CloseWithError(c.continueGuestClock(f))
 				return
 			}
 			if c.recovery.Refresh == nil {

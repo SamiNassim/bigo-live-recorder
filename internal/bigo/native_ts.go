@@ -17,6 +17,10 @@ type nativeTSClock struct {
 	continuity               map[uint16]byte
 }
 
+type nativeClockError string
+
+func (err nativeClockError) Error() string { return string(err) }
+
 func nativeVideoType(codec byte) (byte, error) {
 	switch codec {
 	case 0, 2, 3:
@@ -46,6 +50,7 @@ type nativeTSMux struct {
 	audioOnly, opus              bool
 	startWithAudio               bool
 	videoCodec                   byte
+	timing                       *CaptureTiming
 }
 
 func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
@@ -99,7 +104,7 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	// recording clock began on an earlier socket.
 	if pts < 0 || (!f.video && pts < m.startPTS) {
 		if (f.video && pts < m.startPTS-10*90000) || (!f.video && !m.lastAudioTime.IsZero() && pts < m.lastAudioPTS-10*90000) {
-			return errors.New("BIGO native media clock moved backward; a new media connection is required")
+			return nativeClockError("BIGO native media clock moved backward; a new media connection is required")
 		}
 		return nil
 	}
@@ -111,10 +116,10 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		}
 		dts = int64(int32(f.dts-m.base))*90 + m.offset
 		if nativeClockJump(dts, m.lastVideoDTS, now, m.lastVideoTime) {
-			return errors.New("BIGO native video timestamp jumped; a new media connection is required")
+			return nativeClockError("BIGO native video timestamp jumped; a new media connection is required")
 		}
 		if nativeClockJump(dts, m.lastAudioPTS, now, m.lastAudioTime) {
-			return errors.New("BIGO native video and audio clocks diverged; a new media connection is required")
+			return nativeClockError("BIGO native video and audio clocks diverged; a new media connection is required")
 		}
 		if dts > pts {
 			dts = pts
@@ -130,10 +135,10 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 		}
 	} else {
 		if nativeClockJump(pts, m.lastAudioPTS, now, m.lastAudioTime) {
-			return errors.New("BIGO native audio timestamp jumped; a new media connection is required")
+			return nativeClockError("BIGO native audio timestamp jumped; a new media connection is required")
 		}
 		if nativeClockJump(pts, m.lastVideoDTS, now, m.lastVideoTime) {
-			return errors.New("BIGO native audio and video clocks diverged; a new media connection is required")
+			return nativeClockError("BIGO native audio and video clocks diverged; a new media connection is required")
 		}
 	}
 	if pts-m.lastTables >= 45000 || f.key {
@@ -171,6 +176,7 @@ func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	if err := m.packets(pid, pes, f.video || m.audioOnly, f.key, dts); err != nil {
 		return err
 	}
+	m.timing.record(f, pts, dts)
 	if f.video {
 		m.lastVideoDTS, m.lastVideoTime = dts, now
 	} else {
