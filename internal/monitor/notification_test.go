@@ -80,12 +80,20 @@ func TestIdentifiedAlertDuringFallbackCheckIsNotClearedByOldResponse(t *testing.
 	case <-time.After(3 * time.Second):
 		t.Fatal("fallback check did not start")
 	}
+	e.mu.Lock()
+	previousSignalTime := e.items["test"].lastSignal
+	e.mu.Unlock()
 	events <- bigolistener.Notification{Attributed: true}
 	waitFor(t, func() bool {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		return !e.items["test"].lastAttributed.IsZero()
 	})
+	// Windows can deliver both accepted signals in one clock tick. Force that
+	// case on every platform so timestamp precision cannot hide a lost alert.
+	e.mu.Lock()
+	e.items["test"].lastSignal = previousSignalTime
+	e.mu.Unlock()
 	close(client.finish)
 	waitFor(t, func() bool { return e.Snapshot().Recording == 1 })
 	if client.calls.Load() != 3 {

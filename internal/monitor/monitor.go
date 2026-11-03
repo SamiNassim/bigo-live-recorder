@@ -64,6 +64,7 @@ type item struct {
 	pending           bool
 	retryUntil        time.Time
 	lastSignal        time.Time
+	signalVersion     uint64
 	lastAttributed    time.Time
 	handle            activeRecording
 	recordCancel      context.CancelFunc
@@ -674,6 +675,7 @@ func (e *Engine) listen(ctx context.Context, id string, ch <-chan bigolistener.N
 			if it != nil && (it.handle == nil || it.row.Streamer.RecordingPaused) && !it.row.Streamer.Paused &&
 				(time.Since(it.lastSignal) > 30*time.Second || n.Attributed && time.Since(it.lastAttributed) > 30*time.Second) {
 				it.lastSignal = time.Now()
+				it.signalVersion++
 				if n.Attributed {
 					it.lastAttributed = it.lastSignal
 				}
@@ -706,7 +708,7 @@ func (e *Engine) check(id string) {
 	bootstrap := !it.initial
 	presenceOnly := it.row.Streamer.RecordingPaused
 	target := it.row.Streamer
-	signalAtStart := it.lastSignal
+	signalAtStart := it.signalVersion
 	e.mu.Unlock()
 	var stream bigo.Stream
 	var err error
@@ -817,7 +819,7 @@ func (e *Engine) check(id string) {
 		it.row.RoomKind = bigo.RoomUnknown
 		it.audioRoom = ""
 		it.row.Status = "Offline"
-		if it.pending && it.lastSignal.After(signalAtStart) {
+		if it.pending && it.signalVersion != signalAtStart {
 			// A newer signal arrived during this request. Its resolution
 			// must not be cleared by the older offline response.
 			it.row.NextCheck = time.Now()
