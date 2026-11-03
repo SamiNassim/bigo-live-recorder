@@ -30,6 +30,31 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 			services.WriteClipboard(r.ProcessedPath)
 		}
 	}
+	if r.BroadcastID != "" {
+		for _, broadcast := range a.store.Data().Broadcasts {
+			if broadcast.ID != r.BroadcastID || broadcast.EndedAt.IsZero() {
+				continue
+			}
+			m.Separator()
+			if broadcast.ReplayPath != "" && broadcast.ReplayPath != r.Path {
+				if m.Item("Open room replay").Disabled(a.busy).Chosen() {
+					a.work(func() error { return mygo.Shell.OpenPath(broadcast.ReplayPath) })
+				}
+			}
+			label := "Assemble room replay"
+			if broadcast.ReplayPending {
+				label = "Room replay is processing…"
+			} else if broadcast.ReplayPath != "" {
+				label = "Rebuild room replay"
+			} else if broadcast.ReplayError != "" {
+				label = "Retry room replay"
+			}
+			if m.Item(label).Disabled(a.busy || a.preview || a.engine == nil || broadcast.ReplayPending).Chosen() {
+				a.work(func() error { return a.engine.QueueReplay(broadcast.ID) })
+			}
+			break
+		}
+	}
 	m.Separator()
 	if m.Item("Remove from history").Disabled(a.busy || a.preview || r.EndedAt.IsZero()).Chosen() {
 		a.work(func() error {

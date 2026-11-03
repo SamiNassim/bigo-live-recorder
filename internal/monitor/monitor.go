@@ -93,6 +93,10 @@ type Engine struct {
 	wg                  sync.WaitGroup
 	processing          chan struct{}
 	process             func(context.Context, string, state.Config) (string, error)
+	replayMu            sync.Mutex
+	replayJobs          map[string]bool
+	replaySlot          chan struct{}
+	replay              func(context.Context, state.Broadcast, state.Config) (string, error)
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {
@@ -101,7 +105,8 @@ func New(store *state.Store, log *logging.Log) *Engine {
 
 func newEngine(store *state.Store, log *logging.Log, client streamClient, start startRecording) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64), processing: make(chan struct{}, 2), process: recording.Process}
+	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64), processing: make(chan struct{}, 2), process: recording.Process,
+		replayJobs: make(map[string]bool), replaySlot: make(chan struct{}, 1), replay: recording.Replay}
 	e.recoverHistory()
 	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) }, func(s string, err error) { log.WriteError("WARN", "listener", s, err) })
 	e.configure(store.Config())
@@ -110,6 +115,11 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	}
 	e.wg.Add(1)
 	go e.run()
+	for _, b := range store.Data().Broadcasts {
+		if b.ReplayPending && !b.EndedAt.IsZero() {
+			e.QueueReplay(b.ID)
+		}
+	}
 	return e
 }
 

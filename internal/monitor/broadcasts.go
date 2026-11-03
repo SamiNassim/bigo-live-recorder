@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"bigo-live-recorder/internal/bigo"
@@ -11,6 +13,7 @@ import (
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
+	"bigo-live-recorder/internal/timeline"
 )
 
 type guestProfileClient interface {
@@ -135,6 +138,21 @@ func (e *Engine) finishBroadcast(id string) {
 	}
 	if ended.ID != "" && ended.Files > 0 {
 		e.log.Write("INFO", ended.StreamerID, fmt.Sprintf("Multi-guest broadcast finalized: room ended; %d files saved (%d bytes). Folder: %s", ended.Files, ended.Bytes, ended.Directory))
+		if _, err := os.Stat(filepath.Join(ended.Directory, timeline.JournalName)); err == nil {
+			e.persist(func(d *state.Data) {
+				for i := range d.Broadcasts {
+					if d.Broadcasts[i].ID == ended.ID {
+						d.Broadcasts[i].ReplayPending = true
+					}
+				}
+			})
+			if e.ctx.Err() != nil {
+				return
+			}
+			if err := e.QueueReplay(ended.ID); err != nil {
+				e.log.WriteError("WARN", ended.StreamerID, "Could not queue the room replay; original recordings are preserved.", err)
+			}
+		}
 	}
 }
 

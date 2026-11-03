@@ -94,16 +94,19 @@ type Recording struct {
 // Broadcast outlives individual files, media reconnects and application restarts.
 // RoomID is the full provider room identity, not its truncated transport SID.
 type Broadcast struct {
-	ID         string    `json:"id"`
-	StreamerID string    `json:"streamer_id"`
-	OwnerUID   uint32    `json:"owner_uid"`
-	RoomID     string    `json:"room_id"`
-	Directory  string    `json:"directory"`
-	StartedAt  time.Time `json:"started_at"`
-	EndedAt    time.Time `json:"ended_at,omitempty"`
-	Notified   bool      `json:"notified,omitempty"`
-	Files      int       `json:"files"`
-	Bytes      int64     `json:"bytes"`
+	ID            string    `json:"id"`
+	StreamerID    string    `json:"streamer_id"`
+	OwnerUID      uint32    `json:"owner_uid"`
+	RoomID        string    `json:"room_id"`
+	Directory     string    `json:"directory"`
+	StartedAt     time.Time `json:"started_at"`
+	EndedAt       time.Time `json:"ended_at,omitempty"`
+	Notified      bool      `json:"notified,omitempty"`
+	Files         int       `json:"files"`
+	Bytes         int64     `json:"bytes"`
+	ReplayPath    string    `json:"replay_path,omitempty"`
+	ReplayError   string    `json:"replay_error,omitempty"`
+	ReplayPending bool      `json:"replay_pending,omitempty"`
 }
 
 type Data struct {
@@ -308,7 +311,7 @@ func (s *Store) Update(fn func(*Data) error) error {
 	if excess := len(next.Broadcasts) - 2000; excess > 0 {
 		kept := make([]Broadcast, 0, len(next.Broadcasts))
 		for _, broadcast := range next.Broadcasts {
-			if excess > 0 && !broadcast.EndedAt.IsZero() {
+			if excess > 0 && !broadcast.EndedAt.IsZero() && !broadcast.ReplayPending {
 				excess--
 				continue
 			}

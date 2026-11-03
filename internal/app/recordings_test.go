@@ -101,6 +101,68 @@ func TestRecordingMenusCoverFullRowAndCopyPath(t *testing.T) {
 	tt.CloseMenu()
 }
 
+func TestBroadcastReplayMenuReflectsProcessingAndCompletion(t *testing.T) {
+	a := accountFixture(t)
+	a.preview = false
+	a.page = "recordings"
+	now := time.Now()
+	r := state.Recording{ID: "raw", Name: "Guest Example", BroadcastID: "fixture-room", Path: filepath.Join(t.TempDir(), "guest.mka"), StartedAt: now.Add(-time.Minute), EndedAt: now}
+	b := state.Broadcast{ID: r.BroadcastID, StreamerID: "host.example", EndedAt: now}
+	set := func(b state.Broadcast) {
+		t.Helper()
+		if err := a.store.Update(func(d *state.Data) error {
+			d.Recordings = []state.Recording{r}
+			d.Broadcasts = []state.Broadcast{b}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		a.data = a.store.Data()
+	}
+	set(b)
+	tt := ui.NewTester(a.view, 1400, 900)
+	menu := func() []string {
+		t.Helper()
+		tt.CloseMenu()
+		tt.Frame()
+		row, ok := tt.Find(r.Name)
+		if !ok {
+			t.Fatal("guest recording missing")
+		}
+		tt.RightClickAt(row.X+row.W/2, row.Y+row.H/2)
+		return tt.Menu()
+	}
+	if !slices.Contains(menu(), "Assemble room replay") {
+		t.Fatal("missing room replay action")
+	}
+	b.ReplayPending = true
+	set(b)
+	if !slices.Contains(menu(), "Room replay is processing…") {
+		t.Fatal("processing status missing")
+	}
+	if err := tt.ChooseMenuItem("Room replay is processing…"); err == nil {
+		t.Fatal("processing status is clickable")
+	}
+	b.ReplayPending = false
+	b.ReplayPath = filepath.Join(t.TempDir(), "replay.mkv")
+	set(b)
+	items := menu()
+	if !slices.Contains(items, "Open room replay") || !slices.Contains(items, "Rebuild room replay") {
+		t.Fatal("completed replay actions missing", items)
+	}
+	b.ReplayPath = ""
+	b.ReplayError = "fixture processing failure"
+	set(b)
+	if !slices.Contains(menu(), "Retry room replay") {
+		t.Fatal("failed replay cannot be retried")
+	}
+	b.EndedAt = time.Time{}
+	set(b)
+	if slices.Contains(menu(), "Retry room replay") {
+		t.Fatal("replay action exposed while room is still live")
+	}
+}
+
 func TestClearRecordingHistoryConfirmationAndAvailability(t *testing.T) {
 	a := accountFixture(t)
 	a.preview = false // No account cookie or engine; only local history controls run.
