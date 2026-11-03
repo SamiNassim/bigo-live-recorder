@@ -20,11 +20,12 @@ import (
 )
 
 type Result struct {
-	Path      string
-	Bytes     int64
-	EndedAt   time.Time
-	Err       error
-	RoomEnded bool
+	Path            string
+	Bytes           int64
+	EndedAt         time.Time
+	Err             error
+	RoomEnded       bool
+	RoomModeChanged bool
 }
 
 type Handle struct {

@@ -20,17 +20,33 @@ import (
 type fixtureGuestRoom struct {
 	guests chan bigo.Participant
 	once   sync.Once
+	end    error
 }
 
 func (r *fixtureGuestRoom) Next(ctx context.Context) (bigo.Participant, error) {
 	select {
 	case guest, ok := <-r.guests:
 		if !ok {
+			if r.end != nil {
+				return bigo.Participant{}, r.end
+			}
 			return bigo.Participant{}, io.EOF
 		}
 		return guest, nil
 	case <-ctx.Done():
 		return bigo.Participant{}, ctx.Err()
+	}
+}
+
+func TestGuestRoomModeChangeFinalizesCaptureWithoutClosingBroadcast(t *testing.T) {
+	room := &fixtureGuestRoom{guests: make(chan bigo.Participant), end: bigo.ErrRoomModeChanged}
+	room.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := startGuestRoom(ctx, cancel, "", state.Streamer{ID: "host.example"}, state.Defaults(), room, nil)
+	r := h.Result()
+	if !r.RoomModeChanged || r.RoomEnded || r.Err != nil {
+		t.Fatal("mode change was confused with recording failure or room closure", r)
 	}
 }
 func (r *fixtureGuestRoom) Close() error { r.once.Do(func() { close(r.guests) }); return nil }

@@ -31,8 +31,9 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 		}
 	}
 	if r.BroadcastID != "" {
-		for _, broadcast := range a.store.Data().Broadcasts {
-			if broadcast.ID != r.BroadcastID || broadcast.EndedAt.IsZero() {
+		data := a.store.Data()
+		for _, broadcast := range data.Broadcasts {
+			if broadcast.ID != r.BroadcastID {
 				continue
 			}
 			m.Separator()
@@ -49,7 +50,11 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 			} else if broadcast.ReplayError != "" {
 				label = "Retry room replay"
 			}
-			if m.Item(label).Disabled(a.busy || a.preview || a.engine == nil || broadcast.ReplayPending).Chosen() {
+			active := false
+			for _, raw := range data.Recordings {
+				active = active || raw.BroadcastID == broadcast.ID && raw.EndedAt.IsZero()
+			}
+			if m.Item(label).Disabled(a.busy || a.preview || a.engine == nil || broadcast.ReplayPending || active).Chosen() {
 				a.work(func() error { return a.engine.QueueReplay(broadcast.ID) })
 			}
 			break

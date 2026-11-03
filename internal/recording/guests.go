@@ -65,12 +65,14 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 		var workers sync.WaitGroup
 		var roomErr error
 		ended := false
+		modeChanged := false
 		profiles := &guestProfiles{resolve: options.GuestProfile, entries: make(map[uint32]*guestProfileEntry)}
 		for {
 			participant, err := room.Next(ctx)
 			if err != nil {
 				ended = errors.Is(err, bigo.ErrRoomEnded)
-				if ctx.Err() == nil && !errors.Is(err, io.EOF) && !ended {
+				modeChanged = errors.Is(err, bigo.ErrRoomModeChanged)
+				if ctx.Err() == nil && !errors.Is(err, io.EOF) && !ended && !modeChanged {
 					roomErr = err
 				}
 				break
@@ -124,6 +126,7 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 		workers.Wait()
 		h.mu.Lock()
 		h.result.RoomEnded = ended
+		h.result.RoomModeChanged = modeChanged
 		if roomErr != nil {
 			h.result.Err = errors.Join(h.result.Err, roomErr)
 		}

@@ -115,11 +115,7 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	}
 	e.wg.Add(1)
 	go e.run()
-	for _, b := range store.Data().Broadcasts {
-		if b.ReplayPending && !b.EndedAt.IsZero() {
-			e.QueueReplay(b.ID)
-		}
-	}
+	e.resumeReplays()
 	return e
 }
 
@@ -962,6 +958,17 @@ func (e *Engine) completed(it *item) {
 	}
 	if r.RoomEnded && it.broadcastID != "" {
 		e.finishBroadcast(it.broadcastID)
+	} else if r.RoomModeChanged && it.broadcastID != "" {
+		e.log.Write("INFO", it.row.Streamer.ID, "BIGO changed the room mode. Guest files are finalized; creating a replay of the captured media while monitoring continues.")
+		if err := e.QueueReplay(it.broadcastID); err != nil && e.ctx.Err() == nil {
+			e.log.WriteError("WARN", it.row.Streamer.ID, "Could not queue the room replay; original recordings are preserved.", err)
+		}
+	} else if it.broadcastID != "" {
+		for _, b := range e.store.Data().Broadcasts {
+			if b.ID == it.broadcastID && b.ReplayPending {
+				e.QueueReplay(b.ID)
+			}
+		}
 	}
 	if !alreadyFinalized && it.config.PostProcess && r.Err == nil && r.Bytes > 0 && e.ctx.Err() == nil {
 		e.processCopy(it.row.Streamer.ID, r.Path, it.config)

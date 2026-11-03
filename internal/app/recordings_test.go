@@ -158,8 +158,14 @@ func TestBroadcastReplayMenuReflectsProcessingAndCompletion(t *testing.T) {
 	}
 	b.EndedAt = time.Time{}
 	set(b)
-	if slices.Contains(menu(), "Retry room replay") {
-		t.Fatal("replay action exposed while room is still live")
+	if !slices.Contains(menu(), "Retry room replay") {
+		t.Fatal("finalized capture cannot be exported before room-end confirmation")
+	}
+	r.EndedAt = time.Time{}
+	set(b)
+	menu()
+	if err := tt.ChooseMenuItem("Retry room replay"); err == nil {
+		t.Fatal("accepted a replay while guest media is still recording")
 	}
 }
 

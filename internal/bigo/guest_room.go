@@ -133,7 +133,7 @@ func (r *guestRoom) refresh() (Stream, error) {
 			return Stream{}, err
 		}
 		if fresh.RoomKind != source.RoomKind {
-			return fresh, errRoomModeChanged
+			return fresh, ErrRoomModeChanged
 		}
 		if fresh.native == nil {
 			return Stream{}, ErrOriginUnavailable
@@ -161,7 +161,7 @@ func (r *guestRoom) refresh() (Stream, error) {
 			return fresh, ErrRoomEnded
 		}
 		if fresh.RoomKind != source.RoomKind {
-			return fresh, errRoomModeChanged
+			return fresh, ErrRoomModeChanged
 		}
 	}
 	if fresh.native == nil {
@@ -198,7 +198,7 @@ func (r *guestRoom) transport(video bool) {
 				return
 			}
 			if _, err := r.refresh(); err != nil {
-				if errors.Is(err, ErrRoomEnded) || errors.Is(err, errRoomModeChanged) {
+				if errors.Is(err, ErrRoomEnded) || errors.Is(err, ErrRoomModeChanged) {
 					r.finish(err)
 					return
 				}
@@ -395,7 +395,7 @@ func (r *guestRoom) watchMedia() {
 			}
 			attempts++
 			next = now.Add(45 * time.Second)
-			if _, err := r.refresh(); errors.Is(err, ErrRoomEnded) || errors.Is(err, errRoomModeChanged) {
+			if _, err := r.refresh(); errors.Is(err, ErrRoomEnded) || errors.Is(err, ErrRoomModeChanged) {
 				r.finish(err)
 				return
 			}

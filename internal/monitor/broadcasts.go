@@ -22,6 +22,9 @@ type guestProfileClient interface {
 
 func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (recording.Options, error) {
 	options := recording.Options{}
+	if source.RoomKind != bigo.RoomAudioMultiGuest && source.RoomKind != bigo.RoomHybridMultiGuest {
+		return options, nil
+	}
 	candidate := recording.NewBroadcast(streamer, source, cfg, time.Now())
 	data := e.store.Data()
 	known := make(map[uint32]bigo.Profile)
@@ -43,9 +46,6 @@ func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, 
 			options.Broadcast = saved
 			return options, nil
 		}
-	}
-	if source.RoomKind != bigo.RoomAudioMultiGuest && source.RoomKind != bigo.RoomHybridMultiGuest {
-		return options, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return options, err

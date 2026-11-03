@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 	"bigo-live-recorder/internal/timeline"
 )
@@ -32,6 +33,28 @@ func replayEngine(t *testing.T) (*Engine, state.Broadcast) {
 		t.Fatal(err)
 	}
 	return e, b
+}
+
+type modeChangedRecording struct{ fakeRecording }
+
+func (h *modeChangedRecording) Result() recording.Result {
+	return recording.Result{Path: h.File(), EndedAt: time.Now(), RoomModeChanged: true}
+}
+
+func TestRoomModeChangeAutomaticallyQueuesCapturedReplay(t *testing.T) {
+	e, b := replayEngine(t)
+	e.store.Update(func(d *state.Data) error { d.Broadcasts[0].EndedAt = time.Time{}; return nil })
+	e.replay = func(_ context.Context, _ state.Broadcast, _ state.Config) (string, error) {
+		path := filepath.Join(b.Directory, "replay.mkv")
+		return path, os.WriteFile(path, []byte("fixture-replay"), 0644)
+	}
+	h := &modeChangedRecording{}
+	it := &item{row: Row{Streamer: state.Streamer{ID: b.StreamerID}}, handle: h, broadcastID: b.ID}
+	e.completed(it)
+	waitFor(t, func() bool { return e.store.Data().Broadcasts[0].ReplayPath != "" })
+	if !e.store.Data().Broadcasts[0].EndedAt.IsZero() || it.handle != nil {
+		t.Fatal("mode change falsely closed the room or kept a stale capture")
+	}
 }
 
 func TestReplayJobsAreDeduplicatedAndDoNotRestoreClearedHistory(t *testing.T) {
@@ -93,22 +116,77 @@ func TestReplayShutdownKeepsPendingJobAndDoesNotWaitForExport(t *testing.T) {
 	}
 }
 
-func TestReplayCannotStartBeforeRoomAndFilesFinish(t *testing.T) {
+func TestReplayCannotStartBeforeFilesFinish(t *testing.T) {
 	e, b := replayEngine(t)
 	e.replay = func(context.Context, state.Broadcast, state.Config) (string, error) {
 		t.Error("started replay before recording finalized")
 		return "", nil
 	}
-	e.store.Update(func(d *state.Data) error { d.Broadcasts[0].EndedAt = time.Time{}; return nil })
-	if err := e.QueueReplay(b.ID); err == nil {
-		t.Fatal("accepted an open room")
-	}
 	e.store.Update(func(d *state.Data) error {
-		d.Broadcasts[0].EndedAt = b.EndedAt
+		d.Broadcasts[0].EndedAt = time.Time{}
 		d.Recordings[0].EndedAt = time.Time{}
 		return nil
 	})
 	if err := e.QueueReplay(b.ID); err == nil {
 		t.Fatal("accepted an active raw recording")
+	}
+}
+
+func TestReplayOfFinalizedCaptureDoesNotClaimTheRoomEnded(t *testing.T) {
+	e, b := replayEngine(t)
+	e.store.Update(func(d *state.Data) error { d.Broadcasts[0].EndedAt = time.Time{}; return nil })
+	e.replay = func(_ context.Context, snapshot state.Broadcast, _ state.Config) (string, error) {
+		if !snapshot.EndedAt.IsZero() || snapshot.ReplayThrough.IsZero() {
+			t.Error("capture snapshot was confused with a confirmed room end")
+		}
+		path := filepath.Join(b.Directory, "replay.mkv")
+		return path, os.WriteFile(path, []byte("fixture-replay"), 0644)
+	}
+	e.resumeReplays() // Also repairs captures saved before this startup.
+	waitFor(t, func() bool { return e.store.Data().Broadcasts[0].ReplayPath != "" })
+	saved := e.store.Data().Broadcasts[0]
+	if !saved.EndedAt.IsZero() || saved.ReplayThrough.IsZero() {
+		t.Fatal("snapshot closed its room or lost its capture boundary", saved)
+	}
+	entries, err := timeline.Read(b.Directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Kind == "broadcast_end" {
+			t.Fatal("wrote a false room-end confirmation")
+		}
+	}
+}
+
+func TestReplayRebuildsWhenAnotherCaptureFinishesDuringProcessing(t *testing.T) {
+	e, b := replayEngine(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int64
+	e.replay = func(ctx context.Context, snapshot state.Broadcast, _ state.Config) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		path := filepath.Join(b.Directory, "replay.mkv")
+		return path, os.WriteFile(path, []byte("fixture-replay"), 0644)
+	}
+	if err := e.QueueReplay(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	next := b.EndedAt.Add(time.Minute)
+	e.store.Update(func(d *state.Data) error {
+		d.Recordings = append(d.Recordings, state.Recording{ID: "later", BroadcastID: b.ID, Path: filepath.Join(b.Directory, "later.mka"), EndedAt: next})
+		return nil
+	})
+	close(release)
+	waitFor(t, func() bool { return e.store.Data().Broadcasts[0].ReplayThrough.Equal(next) })
+	if calls.Load() != 2 {
+		t.Fatal("new finalized media was not included", calls.Load())
 	}
 }

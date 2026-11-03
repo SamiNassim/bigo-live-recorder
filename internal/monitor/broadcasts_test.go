@@ -148,6 +148,11 @@ func TestBroadcastDirectorySurvivesReconnectRenameAndRestart(t *testing.T) {
 	if reopened.Data().Broadcasts[0].Directory == "mutated" {
 		t.Fatal("broadcast snapshot aliases the store")
 	}
+	source.RoomKind = bigo.RoomUnknown
+	normal, err := e.broadcastOptions(context.Background(), streamer, source, cfg)
+	if err != nil || normal.Broadcast.ID != "" {
+		t.Fatal("normal room media was added to an untimed guest broadcast", err)
+	}
 }
 
 func TestBroadcastSuppressesTrackLogsAndFinalizesOnceAfterRoomEnd(t *testing.T) {
