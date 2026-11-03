@@ -107,6 +107,7 @@ type Broadcast struct {
 	ReplayPath    string    `json:"replay_path,omitempty"`
 	ReplayError   string    `json:"replay_error,omitempty"`
 	ReplayPending bool      `json:"replay_pending,omitempty"`
+	ReplayThrough time.Time `json:"replay_through,omitempty"`
 }
 
 type Data struct {

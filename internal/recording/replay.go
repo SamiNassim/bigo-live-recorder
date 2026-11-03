@@ -35,12 +35,12 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	if err != nil {
 		return "", err
 	}
-	if broadcast.EndedAt.IsZero() {
-		return "", errors.New("the broadcast is still open; its replay can be assembled after the room ends")
+	if broadcast.EndedAt.IsZero() && broadcast.ReplayThrough.IsZero() {
+		return "", errors.New("the recording is still open; finalize guest files before assembling its replay")
 	}
-	plan, err := timeline.Reconcile(ctx, broadcast.Directory, func(ctx context.Context, path string) ([]timeline.TrackInfo, error) {
+	plan, err := timeline.ReconcileThrough(ctx, broadcast.Directory, func(ctx context.Context, path string) ([]timeline.TrackInfo, error) {
 		return inspectReplayMedia(ctx, ff, path)
-	})
+	}, broadcast.ReplayThrough)
 	if err != nil {
 		return "", err
 	}

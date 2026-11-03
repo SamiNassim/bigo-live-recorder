@@ -156,6 +156,12 @@ func (h *clockHistory) remember(f Frame, c *mediaClock) *mediaClock {
 // media packets, estimates source clocks, and removes overlapping source ranges.
 // It refuses missing evidence instead of quietly assembling a misleading replay.
 func Reconcile(ctx context.Context, dir string, probe Probe) (Plan, error) {
+	return ReconcileThrough(ctx, dir, probe, time.Time{})
+}
+
+// ReconcileThrough can export finalized capture sessions before the provider
+// confirms the room's end. Newer sessions remain available for the next replay.
+func ReconcileThrough(ctx context.Context, dir string, probe Probe, through time.Time) (Plan, error) {
 	entries, err := Read(dir)
 	if err != nil {
 		return Plan{}, err
@@ -165,7 +171,14 @@ func Reconcile(ctx context.Context, dir string, probe Probe) (Plan, error) {
 	}
 	plan := Plan{Version: 1, Timing: "receiver-aligned"}
 	files := make(map[string]bool)
+	finished := make(map[string]Entry)
 	for _, e := range entries {
+		if e.Kind == "file_end" {
+			finished[e.File] = e
+		}
+		if !through.IsZero() && e.At.After(through) {
+			continue
+		}
 		if e.Kind == "file" && !e.Epoch.IsZero() && (plan.Origin.IsZero() || e.Epoch.Before(plan.Origin)) {
 			plan.Origin = e.Epoch
 		}
@@ -184,12 +197,27 @@ func Reconcile(ctx context.Context, dir string, probe Probe) (Plan, error) {
 			continue
 		}
 		files[entry.File] = true
+		if !through.IsZero() && entry.At.After(through) {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return Plan{}, err
 		}
 		path, err := LocalPath(dir, entry.File)
 		if err != nil {
 			return Plan{}, fmt.Errorf("read original guest media: %w", err)
+		}
+		end, closed := finished[entry.File]
+		if !through.IsZero() && (!closed || end.At.After(through)) {
+			return Plan{}, errors.New("guest recordings are still being finalized; retry after capture finishes")
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return Plan{}, err
+		}
+		if info.Size() == 0 && closed {
+			plan.Warnings = append(plan.Warnings, "Empty guest recording omitted: "+entry.File)
+			continue
 		}
 		timing, err := LocalPath(dir, entry.Timing)
 		if err != nil {

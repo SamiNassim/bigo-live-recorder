@@ -121,3 +121,63 @@ func TestCancelledReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReconcileSnapshotSkipsOnlyFinalizedEmptyAttempts(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Open(dir, "fixture-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	epoch := time.Unix(1900000000, 0)
+	write := func(name string, at time.Time, empty, closed bool) {
+		t.Helper()
+		payload := []byte("fixture-media")
+		if empty {
+			payload = nil
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), payload, 0644); err != nil {
+			t.Fatal(err)
+		}
+		w, err := j.Create(Entry{File: name, UID: 900000001, ID: "guest.example", Epoch: epoch, At: at}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range 50 {
+			w.Write(Frame{Received: time.Second + time.Duration(i)*20*time.Millisecond, SourcePTS: uint32(i * 20), SourceDTS: uint32(i * 20), PTS: int64(i * 1800), DTS: int64(i * 1800), Duration: 20 * time.Millisecond})
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if closed {
+			if err := j.Append(Entry{Kind: "file_end", File: name, At: at.Add(time.Second)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("saved.mka", epoch, false, true)
+	write("empty.mka", epoch, true, true)
+	write("new-session.mka", epoch.Add(time.Minute), true, false)
+	calls := 0
+	probe := func(_ context.Context, path string) ([]TrackInfo, error) {
+		calls++
+		if filepath.Base(path) != "saved.mka" {
+			t.Fatal("probed an empty attempt or a newer active session", path)
+		}
+		return []TrackInfo{{First: 0, End: 1, Packets: 50}}, nil
+	}
+	p, err := ReconcileThrough(context.Background(), dir, probe, epoch.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(p.Files) != 1 || len(p.Clips) != 1 || len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "empty.mka") {
+		t.Fatal("incorrect capture snapshot", p)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "empty.mka")); err != nil || info.Size() != 0 {
+		t.Fatal("empty original was changed or removed", err)
+	}
+	_, err = ReconcileThrough(context.Background(), dir, probe, epoch.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "still being finalized") {
+		t.Fatal("accepted an unfinished empty recording", err)
+	}
+}
