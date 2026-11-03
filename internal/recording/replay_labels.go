@@ -1,51 +1,29 @@
 package recording
 
 import (
-	"image"
-	"image/color"
-	"image/draw"
 	"image/png"
 	"os"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	"github.com/egoist/mygo/ui"
 )
 
-// Labels use the same compiled Go image/font libraries as the interface. The
-// viewing copy requires neither FFmpeg's optional drawtext filter nor a font
-// installation on the recording machine.
+// Render labels with the interface's native text stack. System font fallback
+// preserves emoji, joined sequences and scripts beyond the default font, without
+// depending on FFmpeg's optional drawtext filter or bundling another font.
 func replayLabel(path, id, name string, width int) error {
-	f, err := opentype.Parse(goregular.TTF)
-	if err != nil {
-		return err
-	}
-	face, err := opentype.NewFace(f, &opentype.FaceOptions{Size: 18, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return err
-	}
-	defer face.Close()
-	canvas := image.NewRGBA(image.Rect(0, 0, width, 48))
-	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{10, 12, 16, 245}), image.Point{}, draw.Src)
 	if id == "" {
 		id = "Unidentified guest"
 	}
 	if name == id {
 		name = ""
 	}
-	d := font.Drawer{Dst: canvas, Src: image.White, Face: face}
-	for i, line := range []string{id, name} {
-		runes := []rune(line)
-		for len(runes) > 0 && d.MeasureString(string(runes)).Ceil() > width-24 {
-			runes = runes[:len(runes)-1]
-		}
-		if len(runes) < len([]rune(line)) && len(runes) > 0 {
-			runes[len(runes)-1] = '…'
-		}
-		d.Dot = fixed.P(12, 20+i*22)
-		d.DrawString(string(runes))
-	}
+	canvas := ui.Render(func(c *ui.Context) {
+		ui.Column(c).Width(float32(width)).Height(48).Padding(2, 12).Gap(0).Clip().Background(ui.RGBA(10, 12, 16, 245)).Children(func() {
+			for _, line := range []string{id, name} {
+				ui.Text(c, line).FontSize(18).FixedLineHeight(22).Height(22).Width(float32(max(0, width-24))).SingleLine().TextColor(ui.RGB(255, 255, 255))
+			}
+		})
+	}, width, 48, 1)
 	out, err := os.Create(path)
 	if err != nil {
 		return err

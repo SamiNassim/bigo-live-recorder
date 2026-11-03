@@ -51,7 +51,7 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	if err != nil {
 		return "", err
 	}
-	key := sha256.Sum256(append([]byte("replay-v1/"+strconv.FormatInt(batchFrames, 10)+"/"), encoded...))
+	key := sha256.Sum256(append([]byte("replay-v2/"+strconv.FormatInt(batchFrames, 10)+"/"), encoded...))
 	work := filepath.Join(broadcast.Directory, ".replay-work", hex.EncodeToString(key[:8]))
 	if err = prepareReplayWork(work, key); err != nil {
 		return "", err
