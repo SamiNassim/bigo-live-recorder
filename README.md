@@ -1,5 +1,7 @@
 <h1 align="center">
-  <img src="internal/assets/icon.png" alt="BIGO Live Recorder icon" width="128" height="128">
+  <a href="https://github.com/SamiNassim/bigo-live-recorder/releases">
+    <img src="internal/assets/icon.png" alt="BIGO Live Recorder icon" width="128" height="128">
+  </a>
   <br>
   BIGO Live Recorder
 </h1>
