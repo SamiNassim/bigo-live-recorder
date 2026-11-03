@@ -293,6 +293,11 @@ BIGO Live Recorder is an independent project developed for educational purposes.
 It is not affiliated with, sponsored by, or endorsed by BIGO. Its educational
 purpose does not grant permission to record or redistribute someone else's content.
 
+## Donate
+
+- **ETH:** `0x1739eF0cB6aF1E8188A727B73EDeA9B4aa12187f`
+- **SOL:** `G13EVpg5dK4vKBDth8iC7K1xd2xY9qTVAREbh57JdvaE`
+
 ## Credits
 
 - [The Go Programming Language](https://go.dev/) — [License](https://go.dev/LICENSE)
