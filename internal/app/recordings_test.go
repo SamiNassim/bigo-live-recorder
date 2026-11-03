@@ -125,7 +125,7 @@ func TestBroadcastReplayMenuReflectsProcessingAndCompletion(t *testing.T) {
 		t.Helper()
 		tt.CloseMenu()
 		tt.Frame()
-		row, ok := tt.Find(b.StreamerID)
+		row, ok := tt.Find(r.Name)
 		if !ok {
 			t.Fatal("broadcast group missing")
 		}

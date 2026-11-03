@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -9,6 +10,63 @@ import (
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo/ui"
 )
+
+func TestRecordingGroupUsesSavedHostNameWithoutChangingGuestLabels(t *testing.T) {
+	a, b := groupedRecordingFixture(t)
+	const host = "Demo · Host 🌙"
+	if err := a.store.Update(func(d *state.Data) error {
+		for i := range d.Recordings {
+			r := &d.Recordings[i]
+			if r.BroadcastID == b.ID && r.GuestName != "" {
+				r.Name = host + " · " + r.GuestID + " (" + r.GuestName + ")"
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.refresh()
+	tt := ui.NewTester(a.view, 1400, 900)
+	if !tt.HasText(host) || tt.HasText(b.StreamerID) {
+		t.Fatal("group header did not use the saved host name", tt.Texts())
+	}
+	a.recordList.Open.Add(recordingKey{ID: b.ID, Group: true})
+	tt.Frame()
+	for _, label := range []string{"guest.one", "guest.two", "Video · First Guest", "Audio · Second Guest"} {
+		if !tt.HasText(label) {
+			t.Fatal("expanded guest label changed", label, tt.Texts())
+		}
+	}
+}
+
+func TestRecordingGroupActionsFitWithoutHorizontalScrolling(t *testing.T) {
+	for _, width := range []int{1050, 1262, 1400} {
+		for _, replay := range []bool{true, false} {
+			t.Run(fmt.Sprintf("width_%d/replay_%t", width, replay), func(t *testing.T) {
+				a, _ := groupedRecordingFixture(t)
+				label := "Replay"
+				if !replay {
+					label = "Folder"
+					if err := a.store.Update(func(d *state.Data) error {
+						d.Recordings = slices.DeleteFunc(d.Recordings, func(r state.Recording) bool { return r.ID == "replay:"+r.BroadcastID })
+						d.Broadcasts[0].ReplayPath = ""
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					a.refresh()
+				}
+				tt := ui.NewTester(a.view, width, 900)
+				button, ok := tt.Find(label)
+				// Keep both the native button border and the cell's right
+				// padding inside the table, including at minimum window size.
+				if !ok || button.X+button.W > float32(width)-40 {
+					t.Fatal("broadcast action is clipped at the right edge", label, button, width)
+				}
+			})
+		}
+	}
+}
 
 func TestRecordingGroupsSeparateBroadcastsAndKeepReplayOutOfSourceTotals(t *testing.T) {
 	start := time.Unix(1900000000, 0)

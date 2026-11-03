@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"bigo-live-recorder/internal/state"
@@ -17,6 +18,7 @@ type recordingKey struct {
 
 type recordingGroup struct {
 	broadcast state.Broadcast
+	hostName  string
 	started   time.Time
 	ended     time.Time
 	bytes     int64
@@ -84,6 +86,12 @@ func buildRecordingTree(records []state.Recording, broadcasts []state.Broadcast)
 		if r.ID == "replay:"+r.BroadcastID || r.Path != "" && r.Path == g.broadcast.ReplayPath {
 			g.broadcast.ReplayPath = r.Path
 		} else {
+			if g.hostName == "" && r.Name != "" {
+				g.hostName = r.Name
+				if r.GuestName != "" {
+					g.hostName = strings.TrimSuffix(g.hostName, " · "+r.GuestID+" ("+r.GuestName+")")
+				}
+			}
 			g.files++
 			g.bytes += r.Bytes
 			g.active = g.active || r.EndedAt.IsZero()
@@ -182,6 +190,9 @@ func (tree *recordingTree) children(key recordingKey) []recordingKey {
 }
 
 func (g recordingGroup) name() string {
+	if g.hostName != "" {
+		return g.hostName
+	}
 	if g.broadcast.StreamerID != "" {
 		return g.broadcast.StreamerID
 	}

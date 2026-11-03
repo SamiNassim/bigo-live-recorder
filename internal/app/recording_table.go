@@ -43,7 +43,7 @@ func (a *application) recordings(c *ui.Context) {
 		}
 	}
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
-		ui.OutlineTable(c, &a.recordList, []ui.TableColumn{{Title: "Streamer", Width: 200}, {Title: "Started", Width: 150}, {Title: "Duration", Width: 90}, {Title: "Size", Width: 85}, {Title: "File", MinWidth: 140}, {Title: "", ID: "open", Width: 75}}, tree.roots, tree.children, func(key recordingKey, col int) {
+		ui.OutlineTable(c, &a.recordList, []ui.TableColumn{{Title: "Streamer", Width: 200}, {Title: "Started", Width: 150}, {Title: "Duration", Width: 90}, {Title: "Size", Width: 85}, {Title: "File", MinWidth: 140}, {Title: "", ID: "open", Width: 100, MinWidth: 100}}, tree.roots, tree.children, func(key recordingKey, col int) {
 			if key.Group {
 				a.recordingGroupCell(c, key, tree.groups[key.ID], col)
 				return
@@ -106,7 +106,7 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 	switch col {
 	case 0:
 		label := ui.Column(c).Grow(1).MinWidth(0).Gap(3).Padding(7, 0).Children(func() {
-			ui.Text(c, g.name()).FontWeight(600).SingleLine().Tooltip("Multi-guest broadcast · " + g.name())
+			ui.Text(c, g.name()).FontWeight(600).SingleLine().Tooltip(g.name() + "\nBIGO ID: " + g.broadcast.StreamerID)
 			ui.Text(c, "Multi-guest").FontSize(11).TextColor(t.TextMuted)
 		})
 		if label.RowDoubleClicked() {
