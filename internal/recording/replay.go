@@ -294,11 +294,11 @@ func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timelin
 		offset, stop := from-start, to-start
 		x, y := (c.Slot%cols)*w, (c.Slot/cols)*h
 		if c.Video {
-			fmt.Fprintf(&graph, "[%d:v]trim=duration=%s,setpts=(PTS-STARTPTS)/%s+%s/TB,scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2:eval=frame,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black:eval=frame,setsar=1[v%d];\n", input, seconds(length), seconds(speed), seconds(offset), w, h-48, w, h-48, input)
+			fmt.Fprintf(&graph, "[%d:v]trim=duration=%s,setpts=PTS/%s+%s/TB,scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2:eval=frame,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black:eval=frame,setsar=1[v%d];\n", input, seconds(length), seconds(speed), seconds(offset), w, h-48, w, h-48, input)
 			fmt.Fprintf(&graph, "[base%d][v%d]overlay=x=%d:y=%d:eof_action=pass:repeatlast=0:enable='between(t,%s,%s)'[base%d];\n", base, input, x, y, seconds(offset), seconds(stop), base+1)
 			base++
 		} else {
-			fmt.Fprintf(&graph, "[%d:a]atrim=duration=%s,asetpts=PTS-STARTPTS,atempo=%s,aresample=48000,aformat=channel_layouts=stereo,adelay=%d:all=1[a%d];\n", input, seconds(length), seconds(speed), int64(math.Round(offset*1000)), input)
+			fmt.Fprintf(&graph, "[%d:a]atrim=duration=%s,aresample=48000:async=1:first_pts=0:min_hard_comp=0.01,atempo=%s,aformat=channel_layouts=stereo,adelay=%d:all=1[a%d];\n", input, seconds(length), seconds(speed), int64(math.Round(offset*1000)), input)
 			audios = append(audios, fmt.Sprintf("[a%d]", input))
 		}
 		input++

@@ -3,7 +3,9 @@ package recording
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +96,14 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 		if color != "" {
 			args = append(args, "-f", "lavfi", "-i", "color=c="+color+":s=64x96:r=25")
 		}
-		args = append(args, "-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", fmt.Sprintf("%.3f", duration))
+		frequency := 440
+		if uid == 900000002 {
+			frequency = 880
+		}
+		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("sine=f=%d:r=48000", frequency), "-t", fmt.Sprintf("%.3f", duration))
+		if uid == 900000002 {
+			args = append(args, "-af", "aselect='not(between(t,0.15,0.45))'")
+		}
 		if color != "" {
 			args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1")
 		}
@@ -111,6 +120,9 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 		}
 		for i := 0; float64(i)*.02 < duration-.001; i++ {
 			at := float64(i) * .02
+			if uid == 900000002 && at >= .15 && at <= .45 {
+				continue
+			}
 			source := base + uint32((start+at)*1000)
 			w.Write(timeline.Frame{Received: time.Duration((start + at + .05 + float64(i%5)*.001) * float64(time.Second)), SourcePTS: source, SourceDTS: source, PTS: int64(at * 90000), DTS: int64(at * 90000), Duration: 20 * time.Millisecond, Codec: 7})
 		}
@@ -168,6 +180,27 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 		} else if int(out[sample.channel]) < sample.minimum {
 			t.Fatalf("wrong camera at %.2f: %v", sample.at, out)
 		}
+	}
+	// Guest two is silent across the one-second batch boundary. Seeking
+	// inside that gap must not move their next 880 Hz tone to the batch start.
+	energy := func(at float64) float64 {
+		t.Helper()
+		pcm, err := exec.CommandContext(ctx, ff, "-hide_banner", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", at), "-i", path, "-t", "0.08", "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var re, im float64
+		for i := 0; i+1 < len(pcm); i += 2 {
+			sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:]))) / 32768
+			angle := 2 * math.Pi * 880 * float64(i/2) / 48000
+			re += sample * math.Cos(angle)
+			im += sample * math.Sin(angle)
+		}
+		return math.Hypot(re, im) / float64(max(1, len(pcm)/2))
+	}
+	quiet, active := energy(1.04), energy(1.45)
+	if active < .01 || quiet > active*.08 {
+		t.Fatalf("audio silence moved across a batch boundary: quiet=%g active=%g", quiet, active)
 	}
 	cancelled, stop := context.WithCancel(context.Background())
 	stop()

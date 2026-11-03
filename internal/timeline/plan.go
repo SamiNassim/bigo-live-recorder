@@ -248,11 +248,10 @@ func Reconcile(ctx context.Context, dir string, probe Probe) (Plan, error) {
 			gap := false
 			if current != nil {
 				delta := float64(int32(f.SourceDTS-current.last.SourceDTS)) / 1000
-				limit := .25
-				if f.Video {
-					limit = 1
-				}
-				gap = delta > limit || delta < -0.25 || math.Abs((float64(f.DTS-current.last.DTS)/90000)-delta) > .05
+				// Sparse/DTX audio remains one timestamped track. The replay
+				// resampler fills its gaps with silence; opening one input per
+				// silence packet would create thousands of needless slices.
+				gap = (f.Video && delta > 1) || delta < -0.25 || math.Abs((float64(f.DTS-current.last.DTS)/90000)-delta) > .05
 			}
 			if current == nil || current.clock != clock || gap {
 				current = &mediaSpan{clip: Clip{File: entry.File, UID: entry.UID, ID: entry.ID, Name: entry.Name, Video: f.Video}, clock: clock, first: x, end: x + duration, muxFirst: mux, muxEnd: mux + duration}
