@@ -198,3 +198,14 @@ func (g recordingGroup) name() string {
 	}
 	return "Multi-guest broadcast"
 }
+
+func (g recordingGroup) replayIsPartial() bool {
+	return g.broadcast.ReplayPath != "" && (g.active || !g.broadcast.ReplayThrough.IsZero() && g.ended.After(g.broadcast.ReplayThrough))
+}
+
+func (g recordingGroup) replayHint() string {
+	if g.replayIsPartial() {
+		return "Opens the last completed replay. New guest recordings are saved separately until the replay is rebuilt; this video does not grow during playback."
+	}
+	return "Opens the completed replay video. Rebuilding creates a replacement only after processing and playback validation finish."
+}

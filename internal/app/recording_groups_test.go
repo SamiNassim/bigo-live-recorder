@@ -212,3 +212,30 @@ func TestRecordingGroupReplayStatusRefreshesWithoutNewFiles(t *testing.T) {
 		t.Fatal("replay status was stale or expanded its group")
 	}
 }
+
+func TestRecordingGroupDistinguishesSavedReplayFromNewCapture(t *testing.T) {
+	a, b := groupedRecordingFixture(t)
+	if err := a.store.Update(func(d *state.Data) error {
+		d.Recordings = append(d.Recordings, state.Recording{ID: "later", BroadcastID: b.ID, Path: filepath.Join(b.Directory, "later.mka"), StartedAt: b.ReplayThrough.Add(time.Minute)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.refresh()
+	a.recordList.Open.Add(recordingKey{ID: b.ID, Group: true})
+	tt := ui.NewTester(a.view, 1400, 900)
+	if !tt.HasText("Recording · saved replay") || !tt.HasText("Saved replay · earlier capture") || tt.HasText("Replay ready") {
+		t.Fatal("an older snapshot looked like the current live replay", tt.Texts())
+	}
+	if err := a.store.Update(func(d *state.Data) error {
+		d.Recordings[len(d.Recordings)-1].EndedAt = b.ReplayThrough.Add(2 * time.Minute)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.refresh()
+	tt.Frame()
+	if !tt.HasText("Earlier replay saved") || tt.HasText("Replay ready") {
+		t.Fatal("new finalized media was presented as already in the replay", tt.Texts())
+	}
+}

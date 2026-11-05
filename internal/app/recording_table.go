@@ -52,6 +52,9 @@ func (a *application) recordings(c *ui.Context) {
 			switch col {
 			case 0:
 				name, detail := recordingTitle(r)
+				if r.ID == "replay:"+r.BroadcastID && tree.groups[r.BroadcastID].replayIsPartial() {
+					detail = "Saved replay · earlier capture"
+				}
 				ui.Column(c).Grow(1).MinWidth(0).Gap(3).Padding(7, 0).Children(func() {
 					ui.Text(c, name).FontWeight(600).SingleLine().Tooltip(name)
 					if detail != "" {
@@ -144,18 +147,27 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 			switch {
 			case g.active:
 				status, color = "Recording…", t.Success
+				if g.broadcast.ReplayPath != "" {
+					status = "Recording · saved replay"
+				}
 			case g.broadcast.ReplayPending:
 				status, color = "Creating replay…", t.Warning
 			case g.broadcast.ReplayError != "":
 				status, color = "Replay needs attention", t.Warning
+			case g.replayIsPartial():
+				status, color = "Earlier replay saved", t.TextMuted
 			case g.broadcast.ReplayPath != "":
 				status, color = "Replay ready", t.Success
 			}
-			ui.Text(c, status).FontSize(11).TextColor(color).SingleLine().Tooltip(g.broadcast.ReplayError)
+			hint := g.broadcast.ReplayError
+			if hint == "" && g.broadcast.ReplayPath != "" {
+				hint = g.replayHint()
+			}
+			ui.Text(c, status).FontSize(11).TextColor(color).SingleLine().Tooltip(hint)
 		})
 	case 5:
 		if g.broadcast.ReplayPath != "" {
-			if ui.Button(c, "Replay").Disabled(a.busy).Clicked() {
+			if ui.Button(c, "Replay").Disabled(a.busy).Tooltip(g.replayHint()).Clicked() {
 				a.work(func() error { return mygo.Shell.OpenPath(g.broadcast.ReplayPath) })
 			}
 		} else if ui.Button(c, "Folder").Disabled(g.broadcast.Directory == "").Clicked() {
