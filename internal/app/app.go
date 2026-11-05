@@ -214,6 +214,14 @@ func Run(dir string, preview bool) error {
 		log.Close()
 		return nil
 	}
+	previousCrash, crashErr := logging.CaptureCrashes(dir)
+	if crashErr != nil {
+		log.WriteError("WARN", "diagnostics", "Could not enable crash reports; unexpected exits may lack a saved stack trace.", crashErr)
+	}
+	if previousCrash != "" {
+		log.Write("WARN", "diagnostics", "The previous run crashed. Its diagnostic stack trace is saved in "+filepath.Base(previousCrash)+" in the configuration folder.")
+	}
+	log.Write("INFO", "app", "Application started")
 	a := newApplication(store, log)
 	mygo.App.SetWindowStateStore(windowStore{store})
 	a.preview = preview
@@ -228,12 +236,14 @@ func Run(dir string, preview bool) error {
 	closed := make(chan struct{})
 	shutdown := func() {
 		stopping.Do(func() {
+			log.Write("INFO", "app", "Closing the application; finalizing active recordings and cancelling background processing.")
 			go func() {
 				defer close(closed)
 				a.cancel()
 				if a.engine != nil {
 					a.engine.Close()
 				}
+				log.Write("INFO", "app", "Application closed cleanly")
 				log.Close()
 				finished.Store(true)
 				mygo.App.Quit()

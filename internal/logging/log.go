@@ -124,19 +124,27 @@ func (l *Log) rotate() error {
 		return err
 	}
 	l.file = nil
-	if err := os.Remove(l.path + ".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(l.path+".1", l.path+".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(l.path, l.path+".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := rotateFiles(l.path); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	l.file = f
 	l.size = 0
 	return err
+}
+
+// Keep the current file and two archives for both event and crash logs.
+func rotateFiles(path string) error {
+	if err := os.Remove(path + ".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(path+".1", path+".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(path, path+".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 func (l *Log) Entries() []Entry {
 	l.mu.Lock()
