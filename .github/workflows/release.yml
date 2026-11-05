@@ -22,11 +22,12 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: macOS, os: macos-latest, platform: darwin/universal }
+          - { name: macOS, os: macos-15-intel, platform: darwin/universal }
           - { name: Windows, os: windows-latest, platform: windows/amd64 }
           - { name: Linux, os: ubuntu-latest, platform: linux/amd64 }
     defaults:
@@ -35,6 +36,7 @@ jobs:
     env:
       TARGET: ${{ matrix.platform }}
       TAG: ${{ inputs.tag || github.ref_name }}
+      GOFLAGS: -trimpath -mod=readonly
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +66,8 @@ jobs:
             choco install ffmpeg -y --no-progress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Verify FFmpeg
+        run: ffmpeg -hide_banner -version
       - name: Test
         run: |
           go vet ./...
@@ -84,6 +88,7 @@ jobs:
     name: Draft GitHub release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     env:
