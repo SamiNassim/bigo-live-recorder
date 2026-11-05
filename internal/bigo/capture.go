@@ -55,9 +55,13 @@ func OpenCapture(ctx context.Context, client *http.Client, source Stream, refere
 }
 
 func openNativeCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
-	return newNativeCaptureWithFallback(ctx, source, recovery, func(ctx context.Context, fresh Stream) (Capture, error) {
+	capture, err := newNativeCaptureWithFallback(ctx, source, recovery, func(ctx context.Context, fresh Stream) (Capture, error) {
 		return openWebCapture(ctx, client, fresh, referer, recovery)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return capture, nil
 }
 
 func openWebCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {

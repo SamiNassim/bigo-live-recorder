@@ -32,6 +32,71 @@ func (c *nativeUpgradeFixture) Next(context.Context) (*CapturePart, error) {
 }
 func (c *nativeUpgradeFixture) Close() error { c.closed.Store(true); return nil }
 
+func TestFailedNativeOpenReturnsNoCapture(t *testing.T) {
+	// An empty native route list fails before any network connection. A
+	// failed constructor must not wrap a nil pointer in the Capture interface.
+	capture, err := openNativeCapture(context.Background(), nil, Stream{native: &pJoinChannelRes{}}, "", StreamRecovery{})
+	if err == nil || capture != nil {
+		t.Fatalf("failed native startup returned capture=%T, error=%v", capture, err)
+	}
+}
+
+func TestWebFallbackContinuesAfterRepeatedNativeStartupFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var playlists, attempts atomic.Int32
+	a, b := hlsTestMedia('a'), hlsTestMedia('b')
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/live.m3u8":
+			n := playlists.Add(1)
+			name := "a"
+			if n > 1 {
+				name = "b"
+			}
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:%d\n%s.ts\n", n, name)
+		case "/a.ts":
+			w.Write(a)
+		case "/b.ts":
+			w.Write(b)
+		}
+	}))
+	defer server.Close()
+	source := Stream{Alive: 1, UID: 900000001, RoomID: "8589934634", HLS: server.URL + "/live.m3u8"}
+	recovery := StreamRecovery{Origin: func(context.Context, Stream) (Stream, error) {
+		fresh := source
+		fresh.native = &pJoinChannelRes{}
+		return fresh, nil
+	}}
+	capture, err := newFallbackCapture(ctx, server.Client(), source, "https://www.bigo.tv/fixture", recovery,
+		fallbackPolicy{time.Millisecond, 5 * time.Millisecond, 50 * time.Millisecond},
+		func(ctx context.Context, fresh Stream) (Capture, error) {
+			attempts.Add(1)
+			return openNativeCapture(ctx, server.Client(), fresh, "", StreamRecovery{})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Close()
+	part, err := capture.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer part.Close()
+	got := make([]byte, len(a))
+	if _, err := io.ReadFull(part, got); err != nil || !bytes.Equal(got, a) {
+		t.Fatal("initial web media was lost", err)
+	}
+	for attempts.Load() < 3 {
+		if err := waitHLS(ctx, time.Millisecond); err != nil {
+			t.Fatal("native retries did not continue", err)
+		}
+	}
+	if _, err := io.ReadFull(part, got); err != nil || !bytes.Equal(got, b) {
+		t.Fatal("native startup failure interrupted web recording", err)
+	}
+}
+
 func TestWebFallbackKeepsRecordingUntilNativeCandidateIsReady(t *testing.T) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
