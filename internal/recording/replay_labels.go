@@ -20,7 +20,7 @@ func replayLabel(path, id, name string, width int) error {
 	canvas := ui.Render(func(c *ui.Context) {
 		ui.Column(c).Width(float32(width)).Height(48).Padding(2, 12).Gap(0).Clip().Background(ui.RGBA(10, 12, 16, 245)).Children(func() {
 			for _, line := range []string{id, name} {
-				ui.Text(c, line).FontSize(18).FixedLineHeight(22).Height(22).Width(float32(max(0, width-24))).SingleLine().TextColor(ui.RGB(255, 255, 255))
+				ui.Text(c, line).FontSize(18).FixedLineHeight(22).Height(22).Width(float32(max(0, width-60))).SingleLine().TextColor(ui.RGB(255, 255, 255))
 			}
 		})
 	}, width, 48, 1)

@@ -51,7 +51,7 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	if err != nil {
 		return "", err
 	}
-	key := sha256.Sum256(append([]byte("replay-v2/"+strconv.FormatInt(batchFrames, 10)+"/"), encoded...))
+	key := sha256.Sum256(append([]byte("replay-v3-speakers/"+strconv.FormatInt(batchFrames, 10)+"/"), encoded...))
 	work := filepath.Join(broadcast.Directory, ".replay-work", hex.EncodeToString(key[:8]))
 	if err = prepareReplayWork(work, key); err != nil {
 		return "", err
@@ -317,6 +317,32 @@ func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timelin
 		args = append(args, "-threads", "1", "-loop", "1", "-framerate", "1", "-t", seconds(duration), "-i", labelFile)
 		x, y := (c.Slot%cols)*w, (c.Slot/cols)*h+h-48
 		fmt.Fprintf(&graph, "[base%d][%d:v]overlay=x=%d:y=%d:eof_action=repeat:repeatlast=1:enable='between(t,%s,%s)'[base%d];\n", base, input, x, y, seconds(from-start), seconds(to-start), base+1)
+		base++
+		input++
+	}
+	speakerImagesReady := false
+	for i, c := range p.Clips {
+		track, err := replaySpeakerTrack(ctx, ff, dir, work, i, w, h, c, start, end)
+		if err != nil {
+			return err
+		}
+		if track == "" {
+			continue
+		}
+		if !speakerImagesReady {
+			// Regenerate once per batch so an interrupted PNG write can
+			// never poison resumed replay processing.
+			for level := uint8(0); level <= 3; level++ {
+				name := fmt.Sprintf("speaker-%dx%d-%d.png", w, h, level)
+				if err := replaySpeakerImage(filepath.Join(work, name), w, h, level); err != nil {
+					return err
+				}
+			}
+			speakerImagesReady = true
+		}
+		args = append(args, "-threads", "1", "-f", "concat", "-safe", "1", "-i", track)
+		x, y := (c.Slot%cols)*w, (c.Slot/cols)*h
+		fmt.Fprintf(&graph, "[base%d][%d:v]overlay=x=%d:y=%d:eof_action=pass:repeatlast=0[base%d];\n", base, input, x, y, base+1)
 		base++
 		input++
 	}
