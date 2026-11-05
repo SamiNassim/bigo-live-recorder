@@ -6,11 +6,17 @@
   BIGO Live Recorder
 </h1>
 
+<p align="center">
+  <a href="https://awesomemygo.dev/apps/bigo-live-recorder"><img src="https://awesomemygo.dev/badge.svg" alt="Listed on Awesome MyGo"></a>
+</p>
+
 Automatically record BIGO livestreams on Windows, macOS, and Linux. Recordings
 stay on your computer, in their original quality, with no re-encoding.
 
 One BIGO account is used for both live notifications and recording. You only need
 your browser for the initial setup: no browser or phone needs to stay running.
+
+![BIGO Live Recorder interface with demo data](assets/screenshot.webp)
 
 ## Download and open
 
@@ -164,7 +170,11 @@ see when it was last verified. Pausing recording does not enable extra polling.
 - **Settings → Recording → Stream quality** defaults to **Origin (native)**.
   It requests BIGO's native source using the same login as the listener, including
   HEVC when supplied. No browser or emulator is needed. If native media cannot
-  start, the app tries the web stream. Choose **Web (automatic)** to always use the
+  start, the app tries the web stream and keeps retrying Origin while it records.
+  It waits 30 seconds before the first retry, then 60 seconds, then up to two
+  minutes between later attempts; connection setup adds to those waits. It switches
+  once native video and audio are ready, starting a new file for the Origin feed.
+  Choose **Web (automatic)** to always use the
   web player rendition. Polling-only mode uses the web stream.
 - Filenames start with the BIGO ID. Streamer folders start with the BIGO ID,
   followed by the display name. Existing files and folders are not renamed.
@@ -184,6 +194,28 @@ see when it was last verified. Pausing recording does not enable extra polling.
 The default folder is `Movies/BIGO Live Recorder` inside your user folder. Changing
 the recording folder affects future recordings; it does not move existing files.
 Desktop alerts can be turned off with **Settings → Application → Notify when recording starts**.
+
+### Multi-guest rooms
+
+Each multi-guest broadcast gets its own folder. The app saves individual guest
+files: video with audio when a camera is on, and audio-only files otherwise.
+Guest changes and media format changes can create additional files. Original
+guest recordings are always kept.
+
+In **Recordings**, expand the broadcast row to see the combined replay and all
+guest files. Each guest's username appears above **Audio · BIGO ID** or
+**Video · BIGO ID**.
+
+After the room ends or changes mode, the app reconciles its saved timing
+information and creates a combined replay video. This viewing copy is rendered
+separately from the original media. A blue border and meter indicate likely speech for both
+camera and audio-only guests. Quiet noise and brief sounds are filtered, but
+music or background voices can still activate the indicator.
+
+If recording resumes in the same broadcast, **Replay** opens the last completed
+version until the next rebuild finishes. The video does not grow during playback:
+a rebuilt and validated replay replaces the previous file. Use the broadcast's
+right-click menu to **Rebuild room replay** after its guest recordings finish.
 
 ### Optional FFmpeg processing
 
@@ -255,6 +287,9 @@ It contains:
 - `data.json`: streamers, pause preferences, and up to 2,000 recording-history entries.
 - `bigo-live-recorder.log` and two rotated backups (`.log.1`, `.log.2`): persistent
   logs, capped at 5 MiB each. Old logs are replaced automatically.
+- `bigo-live-recorder-crash.log`: diagnostic stack traces for unexpected Go
+  panics, with two archived reports (`.log.1`, `.log.2`). Normal restarts preserve
+  earlier reports. Startup and normal shutdown are recorded in the main log.
 - `bin/`: the app's FFmpeg installation, if you used guided setup.
 
 The **Logs** tab shows the latest 5,000 retained entries, newest first. Search and
