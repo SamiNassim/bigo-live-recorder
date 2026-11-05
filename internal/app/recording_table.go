@@ -199,9 +199,9 @@ func recordingTitle(r state.Recording) (string, string) {
 	if r.ID == "replay:"+r.BroadcastID {
 		return "Room replay", "Combined video"
 	}
-	name := r.GuestID
+	name := r.GuestName
 	if name == "" {
-		name = r.GuestName
+		name = r.GuestID
 	}
 	if name == "" {
 		name = "Unidentified guest"
@@ -210,8 +210,8 @@ func recordingTitle(r state.Recording) (string, string) {
 	if strings.EqualFold(filepath.Ext(r.Path), ".mka") {
 		detail = "Audio"
 	}
-	if r.GuestName != "" && r.GuestName != name {
-		detail += " · " + r.GuestName
+	if r.GuestID != "" && r.GuestID != name {
+		detail += " · " + r.GuestID
 	}
 	return name, detail
 }

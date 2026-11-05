@@ -11,7 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func TestRecordingGroupUsesSavedHostNameWithoutChangingGuestLabels(t *testing.T) {
+func TestRecordingGroupUsesSavedHostAndGuestUsernames(t *testing.T) {
 	a, b := groupedRecordingFixture(t)
 	const host = "Demo · Host 🌙"
 	if err := a.store.Update(func(d *state.Data) error {
@@ -32,9 +32,9 @@ func TestRecordingGroupUsesSavedHostNameWithoutChangingGuestLabels(t *testing.T)
 	}
 	a.recordList.Open.Add(recordingKey{ID: b.ID, Group: true})
 	tt.Frame()
-	for _, label := range []string{"guest.one", "guest.two", "Video · First Guest", "Audio · Second Guest"} {
+	for _, label := range []string{"First Guest", "Second Guest", "Video · guest.one", "Audio · guest.two"} {
 		if !tt.HasText(label) {
-			t.Fatal("expanded guest label changed", label, tt.Texts())
+			t.Fatal("expanded guest label is missing", label, tt.Texts())
 		}
 	}
 }
@@ -146,13 +146,13 @@ func TestRecordingGroupsExpandWithDisclosureAndKeepStateAcrossTabs(t *testing.T)
 	a, b := groupedRecordingFixture(t)
 	tt := ui.NewTester(a.view, 1400, 900)
 	key := recordingKey{ID: b.ID, Group: true}
-	if a.recordList.Rows() != 2 || tt.HasText("guest.one") || !tt.HasText("Replay ready") {
+	if a.recordList.Rows() != 2 || tt.HasText("First Guest") || !tt.HasText("Replay ready") {
 		t.Fatal("multi-guest recordings are not collapsed into one row", tt.Texts())
 	}
 	name, _ := tt.Find(b.StreamerID)
 	kind, _ := tt.Find("Multi-guest")
 	tt.ClickAt(name.X-8, (name.Y+kind.Y+kind.H)/2)
-	if !a.recordList.Open.Has(key) || a.recordList.Rows() != 5 || !tt.HasText("guest.one") || !tt.HasText("Room replay") {
+	if !a.recordList.Open.Has(key) || a.recordList.Rows() != 5 || !tt.HasText("First Guest") || !tt.HasText("Room replay") {
 		t.Fatal("disclosure did not expand guest files", tt.Texts())
 	}
 	if a.recordList.Item(1).ID != "replay:"+b.ID {
@@ -162,18 +162,18 @@ func TestRecordingGroupsExpandWithDisclosureAndKeepStateAcrossTabs(t *testing.T)
 	tt.Frame()
 	a.page = "recordings"
 	tt.Frame()
-	if !tt.HasText("guest.two") || !a.recordList.Open.Has(key) {
+	if !tt.HasText("Second Guest") || !a.recordList.Open.Has(key) {
 		t.Fatal("switching tabs collapsed the group")
 	}
 	if err := tt.Click(b.StreamerID); err != nil {
 		t.Fatal(err)
 	}
 	tt.Key(0, ui.KeyLeft)
-	if a.recordList.Open.Has(key) || tt.HasText("guest.one") {
+	if a.recordList.Open.Has(key) || tt.HasText("First Guest") {
 		t.Fatal("keyboard collapse failed")
 	}
 	tt.Key(0, ui.KeyRight)
-	if !a.recordList.Open.Has(key) || !tt.HasText("guest.one") {
+	if !a.recordList.Open.Has(key) || !tt.HasText("First Guest") {
 		t.Fatal("keyboard expansion failed")
 	}
 }
@@ -191,7 +191,7 @@ func TestRecordingGroupMenusTargetFoldersAndIndividualFiles(t *testing.T) {
 	if err := tt.ChooseMenuItem("Expand recordings"); err != nil {
 		t.Fatal(err)
 	}
-	guest, _ := tt.Find("guest.two")
+	guest, _ := tt.Find("Second Guest")
 	tt.RightClickAt(column.X+8, guest.Y+guest.H/2)
 	if err := tt.ChooseMenuItem("Copy file path"); err != nil || tt.Clipboard() != filepath.Join(b.Directory, "audio.mka") {
 		t.Fatal("guest menu targeted the host or another file", err, tt.Clipboard())
