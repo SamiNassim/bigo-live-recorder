@@ -282,7 +282,13 @@ func writeNativeTestVideo(w io.Writer, p nativeVideoPart) error {
 	if p.last {
 		flags |= 32
 	}
+	if p.owner != 0 {
+		flags |= 1
+	}
 	body = append(body, p.codec, flags)
+	if p.owner != 0 {
+		body = binary.LittleEndian.AppendUint32(body, p.owner)
+	}
 	if p.split {
 		body = append(body, byte(p.index))
 	}

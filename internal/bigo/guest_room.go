@@ -45,7 +45,6 @@ type guestRoom struct {
 	guests    chan Participant
 	done      chan struct{}
 	lastMedia atomic.Int64
-	lastVideo atomic.Int64
 	members   map[uint32]*guestMember // Owned by dispatch until done closes.
 	epoch     time.Time
 }
@@ -178,6 +177,7 @@ func (r *guestRoom) transport(video bool) {
 	if video {
 		track = "video"
 	}
+	reconnect := guestReconnectLog{recovery: r.recovery, track: track, enabled: !video}
 	var last error
 	for attempt := 0; r.ctx.Err() == nil; attempt++ {
 		if attempt >= nativeRecoveryAttempts {
@@ -189,7 +189,7 @@ func (r *guestRoom) transport(video bool) {
 				}
 				attempt = 1
 			} else {
-				r.finish(fault.Wrap("could not restore native guest "+track+" after 3 attempts: "+fault.Reason(last), last))
+				r.finish(fault.Wrap("could not restore the room's shared "+track+" connection after 3 attempts: "+fault.Reason(last), reconnect.cause(last)))
 				return
 			}
 		}
@@ -203,25 +203,26 @@ func (r *guestRoom) transport(video bool) {
 					return
 				}
 				last = err
+				if r.ctx.Err() == nil {
+					reconnect.failed(time.Now(), err)
+				}
 				continue
 			}
 		}
 		source := r.current()
 		started := time.Now()
-		last = r.receiveTrack(source, video, attempt)
+		last = r.receiveTrack(source, video, attempt, &reconnect)
 		if r.ctx.Err() != nil {
 			return
 		}
 		if time.Since(started) > time.Minute {
 			attempt = -1
 		}
-		if !video || r.lastVideo.Load() != 0 {
-			r.recovery.reportError("WARN", "The guest "+track+" connection was interrupted. Other guest media continues while it reconnects.", last)
-		}
+		reconnect.failed(time.Now(), last)
 	}
 }
 
-func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
+func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int, reconnect *guestReconnectLog) error {
 	channel := source.native
 	var conn *nativeMediaConn
 	var err error
@@ -267,6 +268,10 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 		activity[uid] = time.Now()
 	}
 	for {
+		if r.ctx.Err() != nil {
+			return r.ctx.Err()
+		}
+		reconnect.waiting(time.Now())
 		if err := conn.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
 			return err
 		}
@@ -346,12 +351,12 @@ func (r *guestRoom) receiveTrack(source Stream, video bool, attempt int) error {
 			if !frame.video {
 				frame.received = received
 			}
-			if frame.video {
-				r.lastVideo.Store(time.Now().UnixNano())
-			}
 			r.lastMedia.Store(time.Now().UnixNano())
 			select {
 			case r.frames <- guestFrame{uid: uid, frame: frame}:
+				if r.ctx.Err() == nil {
+					reconnect.resumed(time.Now())
+				}
 			case <-r.ctx.Done():
 				return r.ctx.Err()
 			}
