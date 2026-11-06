@@ -906,7 +906,7 @@ func (e *Engine) check(id string) {
 	it.pending = false
 	it.retryUntil = time.Time{}
 	it.row.Status = "Recording"
-	it.row.StartedAt = h.Started()
+	it.row.StartedAt = recordingClockStart(h)
 	it.row.Path = h.File()
 	it.row.NextCheck = time.Time{}
 	if h.File() == "" {
@@ -1060,7 +1060,7 @@ func (e *Engine) fileChanges(it *item) {
 		}
 	}
 	if it.row.RoomKind == bigo.RoomAudioMultiGuest || it.row.RoomKind == bigo.RoomHybridMultiGuest {
-		it.row.Path, it.row.StartedAt = it.handle.File(), it.handle.Started()
+		it.row.Path, it.row.StartedAt = it.handle.File(), recordingClockStart(it.handle)
 		if it.row.Status != "Finalizing" {
 			it.row.Status = "Recording"
 			if it.row.Path == "" {

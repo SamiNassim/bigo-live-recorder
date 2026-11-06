@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,89 @@ import (
 type broadcastProfileClient struct {
 	sourceClient
 	calls atomic.Int64
+}
+
+type broadcastRecording struct {
+	rollingRecording
+	broadcast state.Broadcast
+}
+
+func (h *broadcastRecording) Broadcast() state.Broadcast { return h.broadcast }
+
+func TestGuestRoomDurationUsesBroadcastStartAcrossFileChanges(t *testing.T) {
+	for _, kind := range []bigo.RoomKind{bigo.RoomAudioMultiGuest, bigo.RoomHybridMultiGuest} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("kind=%d/active=%t", kind, active), func(t *testing.T) {
+				store, log := fixture(t, false, false)
+				broadcast := state.Broadcast{ID: "fixture-room", StreamerID: "test", StartedAt: time.Now().Add(-9 * time.Minute)}
+				if err := store.Update(func(d *state.Data) error { d.Broadcasts = append(d.Broadcasts, broadcast); return nil }); err != nil {
+					t.Fatal(err)
+				}
+				h := &broadcastRecording{broadcast: broadcast}
+				h.done = make(chan struct{})
+				defer h.Stop()
+				first, second := "/fixture/guest-a.mka", "/fixture/guest-b.mka"
+				firstStart := broadcast.StartedAt.Add(time.Minute)
+				if active {
+					h.path, h.stamp = first, firstStart
+				}
+				source := sourceFixture()
+				source.RoomKind = kind
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				it := &item{row: Row{Streamer: store.Data().Streamers[0]}}
+				e := &Engine{store: store, log: log, ctx: ctx, items: map[string]*item{"test": it}, events: make(chan Event, 8),
+					client: &sourceClient{check: func(context.Context, string) (bigo.Stream, error) { return source, nil }},
+					start: func(context.Context, state.Streamer, bigo.Stream, state.Config) (activeRecording, error) {
+						return h, nil
+					}}
+				e.check("test")
+				if !it.row.StartedAt.Equal(broadcast.StartedAt) {
+					t.Fatalf("recorder startup used a guest file start: got %v, want %v", it.row.StartedAt, broadcast.StartedAt)
+				}
+				for _, step := range []struct {
+					name, path string
+					started    time.Time
+					changes    []recording.FileChange
+				}{
+					{name: "first guest", path: first, started: firstStart, changes: []recording.FileChange{{Path: first, StartedAt: firstStart}}},
+					{name: "another guest joins", path: second, started: firstStart.Add(time.Minute), changes: []recording.FileChange{{Path: second, StartedAt: firstStart.Add(time.Minute)}}},
+					{name: "newer guest leaves", path: first, started: firstStart, changes: []recording.FileChange{{Path: second, Result: &recording.Result{Path: second, EndedAt: firstStart.Add(2 * time.Minute), Bytes: 100}}}},
+					{name: "no active guests", changes: []recording.FileChange{{Path: first, Result: &recording.Result{Path: first, EndedAt: firstStart.Add(3 * time.Minute), Bytes: 200}}}},
+					{name: "guest returns", path: "/fixture/guest-c.mka", started: firstStart.Add(4 * time.Minute), changes: []recording.FileChange{{Path: "/fixture/guest-c.mka", StartedAt: firstStart.Add(4 * time.Minute)}}},
+				} {
+					t.Run(step.name, func(t *testing.T) {
+						h.path, h.stamp, h.changes = step.path, step.started, step.changes
+						for i := range h.changes {
+							h.changes[i].BroadcastID = broadcast.ID
+						}
+						e.fileChanges(it)
+						row := e.Snapshot().Rows[0]
+						if !row.StartedAt.Equal(broadcast.StartedAt) || row.Path != step.path {
+							t.Fatal("guest changes moved the broadcast clock or lost the active file", row)
+						}
+						wantStatus := "Recording"
+						if step.path == "" {
+							wantStatus = "Waiting for guest media"
+						}
+						if row.Status != wantStatus {
+							t.Fatal("incorrect guest recording status", row.Status)
+						}
+						for _, saved := range store.Data().Recordings {
+							if saved.Path == step.path && !saved.StartedAt.Equal(step.started) {
+								t.Fatal("broadcast clock replaced the guest file timestamp", saved)
+							}
+						}
+					})
+				}
+				h.Stop()
+				e.completed(it)
+				if !it.row.StartedAt.IsZero() {
+					t.Fatal("completed recording retained its running clock")
+				}
+			})
+		}
+	}
 }
 
 func (c *broadcastProfileClient) Profile(_ context.Context, uid uint32, _ *bigolistener.Hub) (bigo.Profile, error) {

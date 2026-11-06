@@ -76,6 +76,17 @@ func (e *Engine) broadcastNotified(id string) bool {
 	return false
 }
 
+// Guest files start and stop independently. Keep the displayed room clock on
+// the persisted broadcast start, including across recorder restarts.
+func recordingClockStart(h activeRecording) time.Time {
+	if source, ok := h.(interface{ Broadcast() state.Broadcast }); ok {
+		if broadcast := source.Broadcast(); broadcast.ID != "" && !broadcast.StartedAt.IsZero() {
+			return broadcast.StartedAt
+		}
+	}
+	return h.Started()
+}
+
 func (e *Engine) notifyRecording(it *item, path string) {
 	if it.recordNotified {
 		return
