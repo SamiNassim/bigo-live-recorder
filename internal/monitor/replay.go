@@ -3,14 +3,45 @@ package monitor
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
 
+	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 	"bigo-live-recorder/internal/timeline"
 )
+
+func (e *Engine) ReplayProgressRevision() uint64 {
+	e.replayMu.Lock()
+	defer e.replayMu.Unlock()
+	return e.replayRevision
+}
+
+// ReplayProgressSince returns an immutable snapshot only when progress changes.
+// Live percentages are transient; they never rewrite persisted recording history.
+func (e *Engine) ReplayProgressSince(revision uint64) (map[string]recording.ReplayProgress, uint64) {
+	e.replayMu.Lock()
+	defer e.replayMu.Unlock()
+	if revision == e.replayRevision {
+		return nil, revision
+	}
+	return maps.Clone(e.replayProgress), e.replayRevision
+}
+
+func (e *Engine) setReplayProgress(id string, p recording.ReplayProgress) {
+	e.replayMu.Lock()
+	defer e.replayMu.Unlock()
+	if !e.replayJobs[id] || e.ctx.Err() != nil {
+		return
+	}
+	if e.replayProgress[id] != p {
+		e.replayProgress[id] = p
+		e.replayRevision++
+	}
+}
 
 func replayCutoff(d state.Data, id string) (time.Time, bool) {
 	var last time.Time
@@ -81,12 +112,19 @@ func (e *Engine) QueueReplay(id string) error {
 		return err
 	}
 	e.replayJobs[id] = true
+	if e.replayProgress == nil {
+		e.replayProgress = make(map[string]recording.ReplayProgress)
+	}
+	e.replayProgress[id] = recording.ReplayProgress{Stage: "Queued", Percent: -1}
+	e.replayRevision++
 	cfg := e.store.Config()
 	e.wg.Go(func() {
 		followup := false
 		defer func() {
 			e.replayMu.Lock()
 			delete(e.replayJobs, id)
+			delete(e.replayProgress, id)
+			e.replayRevision++
 			e.replayMu.Unlock()
 			if followup && e.ctx.Err() == nil {
 				d := e.store.Data()
@@ -109,7 +147,9 @@ func (e *Engine) QueueReplay(id string) error {
 			}
 		}
 		e.log.Write("INFO", broadcast.StreamerID, "Reconciling the multi-guest timeline and creating one replay video. Original guest files will be kept.")
-		path, err := e.replay(e.ctx, broadcast, cfg)
+		path, err := e.replay(e.ctx, broadcast, cfg, func(p recording.ReplayProgress) {
+			e.setReplayProgress(id, p)
+		})
 		if e.ctx.Err() != nil {
 			return
 		} // Pending survives shutdown for the next launch.

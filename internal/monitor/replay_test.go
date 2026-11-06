@@ -2,6 +2,8 @@ package monitor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -44,7 +46,7 @@ func (h *modeChangedRecording) Result() recording.Result {
 func TestRoomModeChangeAutomaticallyQueuesCapturedReplay(t *testing.T) {
 	e, b := replayEngine(t)
 	e.store.Update(func(d *state.Data) error { d.Broadcasts[0].EndedAt = time.Time{}; return nil })
-	e.replay = func(_ context.Context, _ state.Broadcast, _ state.Config) (string, error) {
+	e.replay = func(_ context.Context, _ state.Broadcast, _ state.Config, _ func(recording.ReplayProgress)) (string, error) {
 		path := filepath.Join(b.Directory, "replay.mkv")
 		return path, os.WriteFile(path, []byte("fixture-replay"), 0644)
 	}
@@ -61,7 +63,7 @@ func TestReplayJobsAreDeduplicatedAndDoNotRestoreClearedHistory(t *testing.T) {
 	e, b := replayEngine(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int64
-	e.replay = func(ctx context.Context, b state.Broadcast, _ state.Config) (string, error) {
+	e.replay = func(ctx context.Context, b state.Broadcast, _ state.Config, _ func(recording.ReplayProgress)) (string, error) {
 		calls.Add(1)
 		close(started)
 		select {
@@ -95,7 +97,7 @@ func TestReplayJobsAreDeduplicatedAndDoNotRestoreClearedHistory(t *testing.T) {
 func TestReplayShutdownKeepsPendingJobAndDoesNotWaitForExport(t *testing.T) {
 	e, b := replayEngine(t)
 	started := make(chan struct{})
-	e.replay = func(ctx context.Context, _ state.Broadcast, _ state.Config) (string, error) {
+	e.replay = func(ctx context.Context, _ state.Broadcast, _ state.Config, _ func(recording.ReplayProgress)) (string, error) {
 		close(started)
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -114,11 +116,68 @@ func TestReplayShutdownKeepsPendingJobAndDoesNotWaitForExport(t *testing.T) {
 	if !e.store.Data().Broadcasts[0].ReplayPending {
 		t.Fatal("interrupted job cannot resume on the next launch")
 	}
+	if progress, _ := e.ReplayProgressSince(0); len(progress) != 0 {
+		t.Fatal("interrupted job retained live percentages", progress)
+	}
+}
+
+func TestReplayProgressIsTransientAndSnapshotsRemainImmutable(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint("failure=", fail), func(t *testing.T) {
+			e, b := replayEngine(t)
+			started, release := make(chan struct{}), make(chan struct{})
+			e.replay = func(ctx context.Context, _ state.Broadcast, _ state.Config, report func(recording.ReplayProgress)) (string, error) {
+				report(recording.ReplayProgress{Stage: "Rendering", Percent: 42})
+				close(started)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+				if fail {
+					return "", errors.New("synthetic render failure")
+				}
+				path := filepath.Join(b.Directory, "replay.mkv")
+				return path, os.WriteFile(path, []byte("fixture-replay"), 0644)
+			}
+			if err := e.QueueReplay(b.ID); err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			savedRevision := e.store.DataRevision()
+			progress, revision := e.ReplayProgressSince(0)
+			if progress[b.ID] != (recording.ReplayProgress{Stage: "Rendering", Percent: 42}) {
+				t.Fatal("missing live progress", progress)
+			}
+			if n := testing.AllocsPerRun(100, func() { e.ReplayProgressSince(revision) }); n != 0 {
+				t.Fatal("unchanged progress snapshots allocate", n)
+			}
+			e.setReplayProgress(b.ID, recording.ReplayProgress{Stage: "Rendering", Percent: 42})
+			if e.ReplayProgressRevision() != revision {
+				t.Fatal("duplicate percentage invalidated the snapshot")
+			}
+			e.setReplayProgress(b.ID, recording.ReplayProgress{Stage: "Rendering", Percent: 43})
+			next, nextRevision := e.ReplayProgressSince(revision)
+			if nextRevision == revision || next[b.ID].Percent != 43 || progress[b.ID].Percent != 42 {
+				t.Fatal("live update missed or mutated an earlier snapshot", next, progress)
+			}
+			if e.store.DataRevision() != savedRevision {
+				t.Fatal("percentage changes rewrote recording history")
+			}
+			close(release)
+			waitFor(t, func() bool { return !e.store.Data().Broadcasts[0].ReplayPending })
+			waitFor(t, func() bool { p, _ := e.ReplayProgressSince(0); return len(p) == 0 })
+			saved := e.store.Data().Broadcasts[0]
+			if (saved.ReplayError != "") != fail || (saved.ReplayPath == "") != fail {
+				t.Fatal("progress cleanup changed the replay result", saved)
+			}
+		})
+	}
 }
 
 func TestReplayCannotStartBeforeFilesFinish(t *testing.T) {
 	e, b := replayEngine(t)
-	e.replay = func(context.Context, state.Broadcast, state.Config) (string, error) {
+	e.replay = func(context.Context, state.Broadcast, state.Config, func(recording.ReplayProgress)) (string, error) {
 		t.Error("started replay before recording finalized")
 		return "", nil
 	}
@@ -135,7 +194,7 @@ func TestReplayCannotStartBeforeFilesFinish(t *testing.T) {
 func TestReplayOfFinalizedCaptureDoesNotClaimTheRoomEnded(t *testing.T) {
 	e, b := replayEngine(t)
 	e.store.Update(func(d *state.Data) error { d.Broadcasts[0].EndedAt = time.Time{}; return nil })
-	e.replay = func(_ context.Context, snapshot state.Broadcast, _ state.Config) (string, error) {
+	e.replay = func(_ context.Context, snapshot state.Broadcast, _ state.Config, _ func(recording.ReplayProgress)) (string, error) {
 		if !snapshot.EndedAt.IsZero() || snapshot.ReplayThrough.IsZero() {
 			t.Error("capture snapshot was confused with a confirmed room end")
 		}
@@ -163,7 +222,7 @@ func TestReplayRebuildsWhenAnotherCaptureFinishesDuringProcessing(t *testing.T) 
 	e, b := replayEngine(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int64
-	e.replay = func(ctx context.Context, snapshot state.Broadcast, _ state.Config) (string, error) {
+	e.replay = func(ctx context.Context, snapshot state.Broadcast, _ state.Config, _ func(recording.ReplayProgress)) (string, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 			select {

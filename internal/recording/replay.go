@@ -26,11 +26,25 @@ var errReplayBatchTooLarge = errors.New("the replay batch exceeds the system com
 // Replay reconciles the full room and creates a derived viewing copy. All
 // originals and timing evidence remain untouched, including on cancellation.
 // Only one bounded batch of inputs is opened at once, even for long broadcasts.
-func Replay(ctx context.Context, broadcast state.Broadcast, cfg state.Config) (string, error) {
-	return assembleReplay(ctx, broadcast, cfg, 60*25)
+func Replay(ctx context.Context, broadcast state.Broadcast, cfg state.Config, report func(ReplayProgress)) (string, error) {
+	return assembleReplay(ctx, broadcast, cfg, 60*25, report)
 }
 
-func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Config, batchFrames int64) (string, error) {
+func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Config, batchFrames int64, report func(ReplayProgress)) (string, error) {
+	previous := ReplayProgress{}
+	notify := report
+	report = func(p ReplayProgress) {
+		if p.Stage == previous.Stage {
+			p.Percent = max(p.Percent, previous.Percent)
+		}
+		if p != previous {
+			previous = p
+			if notify != nil {
+				notify(p)
+			}
+		}
+	}
+	report(ReplayProgress{"Preparing", -1})
 	ff, err := ffmpeg.Find(cfg.FFmpegPath)
 	if err != nil {
 		return "", err
@@ -64,6 +78,7 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	var parts []string
 	var durations []float64
 	totalFrames := int64(math.Ceil(plan.Duration * 25))
+	report(ReplayProgress{"Rendering", 0})
 	for firstFrame := int64(0); firstFrame < totalFrames; {
 		lastFrame := min(firstFrame+batchFrames, totalFrames)
 		start, end := float64(firstFrame)/25, float64(lastFrame)/25
@@ -83,7 +98,12 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 			if validReplayPart(ctx, ff, path, duration) {
 				break
 			}
-			err = renderReplayPart(ctx, ff, broadcast.Directory, work, name, plan, start, end)
+			err = renderReplayPart(ctx, ff, broadcast.Directory, work, name, plan, start, end, func(p replayCommandProgress) {
+				if p.frames >= 0 {
+					done := firstFrame + min(p.frames, lastFrame-firstFrame)
+					report(ReplayProgress{"Rendering", replayPercent(float64(done), float64(totalFrames))})
+				}
+			})
 			if errors.Is(err, errReplayBatchTooLarge) && lastFrame-firstFrame > 1 {
 				lastFrame = firstFrame + (lastFrame-firstFrame)/2
 				end = float64(lastFrame) / 25
@@ -97,7 +117,9 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 		parts = append(parts, name)
 		durations = append(durations, float64(lastFrame-firstFrame)/25)
 		firstFrame = lastFrame
+		report(ReplayProgress{"Rendering", replayPercent(float64(firstFrame), float64(totalFrames))})
 	}
+	report(ReplayProgress{"Rendering", 100})
 	var list strings.Builder
 	for i, name := range parts {
 		fmt.Fprintf(&list, "file '%s'\nduration %.9f\n", name, durations[i])
@@ -108,14 +130,18 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	partial := filepath.Join(work, "replay.pending.mkv")
 	os.Remove(partial)
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-f", "concat", "-safe", "1", "-i", "concat.txt", "-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-threads", "2", "-f", "matroska", "replay.pending.mkv"}
-	if err = runReplayCommand(ctx, ff, work, args); err != nil {
+	duration := float64(totalFrames) / 25
+	report(ReplayProgress{"Joining", 0})
+	if err = runReplayCommand(ctx, ff, work, args, replayTimeProgress(report, "Joining", duration)); err != nil {
 		os.Remove(partial)
 		return "", err
 	}
+	report(ReplayProgress{"Joining", 100})
 	// Decode the complete derived output before publishing it. A process
 	// succeeding or a duration tag existing is not proof of a playable replay.
 	args = []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-xerror", "-threads", "2", "-i", partial, "-map", "0:v", "-map", "0:a", "-fps_mode", "passthrough", "-f", "null", "-"}
-	if err = runReplayCommand(ctx, ff, work, args); err != nil {
+	report(ReplayProgress{"Validating", 0})
+	if err = runReplayCommand(ctx, ff, work, args, replayTimeProgress(report, "Validating", duration)); err != nil {
 		os.Remove(partial)
 		return "", fmt.Errorf("the assembled replay failed playback validation: %w", err)
 	}
@@ -133,6 +159,8 @@ func assembleReplay(ctx context.Context, broadcast state.Broadcast, cfg state.Co
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	report(ReplayProgress{"Validating", 100})
+	report(ReplayProgress{"Saving", -1})
 	f, err := os.OpenFile(partial, os.O_RDWR, 0)
 	if err != nil {
 		return "", err
@@ -213,13 +241,29 @@ func writeReplayJSON(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-func runReplayCommand(ctx context.Context, ff, dir string, args []string) error {
+func runReplayCommand(ctx context.Context, ff, dir string, args []string, progress func(replayCommandProgress)) error {
+	if progress != nil {
+		args = append([]string{"-progress", "pipe:1", "-stats_period", "1", "-nostats"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, ff, args...)
 	cmd.Dir = dir
 	configureCommand(cmd)
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	var err error
+	if progress == nil {
+		err = cmd.Run()
+	} else {
+		out, pipeErr := cmd.StdoutPipe()
+		if pipeErr != nil {
+			return pipeErr
+		}
+		if err = cmd.Start(); err == nil {
+			readReplayProgress(out, progress)
+			err = cmd.Wait()
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -260,10 +304,10 @@ func validReplayPart(ctx context.Context, ff, path string, duration float64) boo
 	if !video || !audio {
 		return false
 	}
-	return runReplayCommand(ctx, ff, filepath.Dir(path), []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-xerror", "-threads", "1", "-i", path, "-map", "0:v", "-map", "0:a", "-fps_mode", "passthrough", "-f", "null", "-"}) == nil
+	return runReplayCommand(ctx, ff, filepath.Dir(path), []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-xerror", "-threads", "1", "-i", path, "-map", "0:v", "-map", "0:a", "-fps_mode", "passthrough", "-f", "null", "-"}, nil) == nil
 }
 
-func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timeline.Plan, start, end float64) error {
+func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timeline.Plan, start, end float64, progress func(replayCommandProgress)) error {
 	const width, height = 1920, 1080
 	cols := int(math.Ceil(math.Sqrt(float64(max(1, p.Slots)))))
 	rows := (max(1, p.Slots) + cols - 1) / cols
@@ -356,7 +400,7 @@ func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timelin
 	if !replayArgsFit(args) {
 		return errReplayBatchTooLarge
 	}
-	err := runReplayCommand(ctx, ff, work, args)
+	err := runReplayCommand(ctx, ff, work, args, progress)
 	// Older FFmpeg releases cannot load an option value from a file. Keep
 	// supporting those installations while respecting Windows' argument limit.
 	if err != nil && strings.Contains(err.Error(), "Unrecognized option '/filter_complex'") {
@@ -370,7 +414,7 @@ func renderReplayPart(ctx context.Context, ff, dir, work, name string, p timelin
 		if !replayArgsFit(args) {
 			return errReplayBatchTooLarge
 		}
-		err = runReplayCommand(ctx, ff, work, args)
+		err = runReplayCommand(ctx, ff, work, args, progress)
 	}
 	if err != nil {
 		os.Remove(filepath.Join(work, partial))

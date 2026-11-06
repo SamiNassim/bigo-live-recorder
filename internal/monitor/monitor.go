@@ -97,7 +97,9 @@ type Engine struct {
 	replayMu            sync.Mutex
 	replayJobs          map[string]bool
 	replaySlot          chan struct{}
-	replay              func(context.Context, state.Broadcast, state.Config) (string, error)
+	replay              func(context.Context, state.Broadcast, state.Config, func(recording.ReplayProgress)) (string, error)
+	replayProgress      map[string]recording.ReplayProgress
+	replayRevision      uint64
 }
 
 func New(store *state.Store, log *logging.Log) *Engine {

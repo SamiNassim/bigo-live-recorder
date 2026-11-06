@@ -49,7 +49,7 @@ func TestReplaySpeakersFollowIndividualAudioAcrossBatchBoundaries(t *testing.T) 
 		checksums[path] = sha256.Sum256(data)
 	}
 	for i, span := range [][2]float64{{0, 2}, {2, 3.32}} {
-		if err := renderReplayPart(ctx, ff, dir, work, fmt.Sprintf("part%d.mkv", i), p, span[0], span[1]); err != nil {
+		if err := renderReplayPart(ctx, ff, dir, work, fmt.Sprintf("part%d.mkv", i), p, span[0], span[1], nil); err != nil {
 			t.Fatal(err)
 		}
 	}

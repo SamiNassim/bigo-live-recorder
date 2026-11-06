@@ -37,22 +37,24 @@ type application struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	logo          *ui.Bitmap
-	avatars       map[string]*ui.Bitmap
-	avatarLoading map[string]bool
-	avatarUsed    map[string]uint64
-	avatarRetry   map[string]time.Time
-	avatarClock   uint64
-	cfg           state.Config
-	snapshot      monitor.Snapshot
-	data          state.Data
-	logs          []logging.Entry
-	dataRevision  uint64
-	logRevision   uint64
-	streamRows    tableCache[monitor.Row]
-	logRowsCache  tableCache[logging.Entry]
-	recordRows    tableCache[state.Recording]
-	recordTree    recordingTree
+	logo           *ui.Bitmap
+	avatars        map[string]*ui.Bitmap
+	avatarLoading  map[string]bool
+	avatarUsed     map[string]uint64
+	avatarRetry    map[string]time.Time
+	avatarClock    uint64
+	cfg            state.Config
+	snapshot       monitor.Snapshot
+	data           state.Data
+	logs           []logging.Entry
+	dataRevision   uint64
+	logRevision    uint64
+	replayProgress map[string]recording.ReplayProgress
+	replayRevision uint64
+	streamRows     tableCache[monitor.Row]
+	logRowsCache   tableCache[logging.Entry]
+	recordRows     tableCache[state.Recording]
+	recordTree     recordingTree
 
 	page                           string
 	query, status, priority, order string
@@ -118,10 +120,16 @@ func (a *application) refreshVisible() bool {
 	queueTargets := a.snapshot.QueueTargets
 	records := a.data.Recordings
 	broadcasts := a.data.Broadcasts
+	previousProgress := a.replayProgress
 	dataRevision, logRevision := a.dataRevision, a.logRevision
 	snapshotChanged := false
+	replayChanged := false
 	if a.engine != nil {
 		a.snapshot, snapshotChanged = a.engine.SnapshotIfChanged(a.snapshot)
+		if progress, revision := a.engine.ReplayProgressSince(a.replayRevision); revision != a.replayRevision {
+			a.replayProgress, a.replayRevision = progress, revision
+			replayChanged = true
+		}
 	}
 	if data, revision := a.store.DataSince(a.dataRevision); revision != a.dataRevision {
 		a.data, a.dataRevision = data, revision
@@ -148,7 +156,7 @@ func (a *application) refreshVisible() bool {
 	case "logs":
 		return sidebarChanged || logRevision != a.logRevision
 	case "recordings":
-		return sidebarChanged || dataRevision != a.dataRevision && (!slices.Equal(records, a.data.Recordings) || !slices.Equal(broadcasts, a.data.Broadcasts))
+		return sidebarChanged || replayChanged && a.visibleReplayProgressChanged(previousProgress) || dataRevision != a.dataRevision && (!slices.Equal(records, a.data.Recordings) || !slices.Equal(broadcasts, a.data.Broadcasts))
 	case "settings":
 		return sidebarChanged || queueTargets != a.snapshot.QueueTargets
 	default:
@@ -304,6 +312,7 @@ func (a *application) updates() {
 	var snapshot monitor.Snapshot
 	var maintenanceError string
 	dataRevision, logRevision := a.store.DataRevision(), a.log.Revision()
+	var replayRevision uint64
 	maintenance := time.NewTicker(5 * time.Second)
 	defer maintenance.Stop()
 	var events <-chan monitor.Event
@@ -329,11 +338,16 @@ func (a *application) updates() {
 			// All comparison state belongs to this goroutine. Window.Update posts
 			// asynchronously; it must not share mutable UI fields with this loop.
 			changed := false
+			replayChanged := false
 			if a.engine != nil {
 				snapshot, changed = a.engine.SnapshotIfChanged(snapshot)
+				if revision := a.engine.ReplayProgressRevision(); revision != replayRevision {
+					replayRevision = revision
+					replayChanged = true
+				}
 			}
 			nextData, nextLog := a.store.DataRevision(), a.log.Revision()
-			if changed || nextData != dataRevision || nextLog != logRevision {
+			if changed || replayChanged || nextData != dataRevision || nextLog != logRevision {
 				dataRevision, logRevision = nextData, nextLog
 				a.refreshBackground()
 			}

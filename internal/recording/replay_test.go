@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -67,7 +68,7 @@ func TestReplayHandlesResolutionChangesInsideOneOriginal(t *testing.T) {
 	work := t.TempDir()
 	duration := tracks[0].End - tracks[0].First
 	p := timeline.Plan{Duration: duration, Slots: 1, Clips: []timeline.Clip{{File: "changing.mkv", UID: 900000001, ID: "guest.example", Video: true, Start: 0, End: duration, FileStart: tracks[0].First, FileEnd: tracks[0].End}}}
-	if err := renderReplayPart(ctx, ff, dir, work, "part.mkv", p, 0, duration); err != nil {
+	if err := renderReplayPart(ctx, ff, dir, work, "part.mkv", p, 0, duration, nil); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.CommandContext(ctx, ff, "-hide_banner", "-loglevel", "error", "-ss", "0.65", "-i", filepath.Join(work, "part.mkv"), "-vf", "crop=2:2:958:498,scale=1:1", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1").Output()
@@ -149,9 +150,72 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 	b := state.Broadcast{ID: "fixture-room", StreamerID: "host.example", Directory: dir, StartedAt: epoch, EndedAt: epoch.Add(3 * time.Second)}
 	// Use one-second batches to exercise concatenation, seeks and AAC
 	// continuity across several boundaries without a minute-long fixture.
-	path, err := assembleReplay(ctx, b, cfg, 25)
+	interrupted, stopRender := context.WithCancel(ctx)
+	var firstProgress []ReplayProgress
+	_, err = assembleReplay(interrupted, b, cfg, 25, func(p ReplayProgress) {
+		firstProgress = append(firstProgress, p)
+		if p.Stage == "Joining" {
+			stopRender()
+		}
+	})
+	stopRender()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("expected interruption before joining", err)
+	}
+	measured := false
+	for _, p := range firstProgress {
+		measured = measured || p.Stage == "Rendering" && p.Percent > 0 && p.Percent < 100
+		if p.Stage == "Joining" && p.Percent == 100 || p.Stage == "Saving" {
+			t.Fatal("interrupted replay claimed completion", firstProgress)
+		}
+	}
+	if !measured {
+		t.Fatal("rendering did not report measured batch progress", firstProgress)
+	}
+	parts, err := filepath.Glob(filepath.Join(dir, ".replay-work", "*", "part-*.mkv"))
+	if err != nil || len(parts) < 2 {
+		t.Fatal("interrupted job lost its completed batches", parts, err)
+	}
+	modified := make(map[string]time.Time)
+	for _, part := range parts {
+		info, err := os.Stat(part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		modified[part] = info.ModTime()
+	}
+	var progress []ReplayProgress
+	path, err := assembleReplay(ctx, b, cfg, 25, func(p ReplayProgress) {
+		progress = append(progress, p)
+		if p.Stage == "Joining" && p.Percent == 0 {
+			for part, stamp := range modified {
+				info, err := os.Stat(part)
+				if err != nil || !info.ModTime().Equal(stamp) {
+					t.Error("resumed replay rerendered a completed batch", part, err)
+				}
+			}
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	stages := []string{"Preparing", "Rendering", "Joining", "Validating", "Saving"}
+	stage, percent := 0, -1
+	for _, p := range progress {
+		if p.Stage != stages[stage] {
+			if stage+1 >= len(stages) || p.Stage != stages[stage+1] || stage > 0 && percent != 100 {
+				t.Fatal("stages were skipped or completed early", progress)
+			}
+			stage++
+			percent = -1
+		}
+		if p.Percent < percent || p.Percent > 100 {
+			t.Fatal("stage progress moved backward or exceeded 100%", progress)
+		}
+		percent = p.Percent
+	}
+	if stage != len(stages)-1 || percent != -1 {
+		t.Fatal("replay did not reach saving", progress)
 	}
 	if !strings.HasPrefix(filepath.Base(path), b.StreamerID+"_") || !strings.HasSuffix(path, "_replay.mkv") {
 		t.Fatal(path)
@@ -204,7 +268,7 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 	}
 	cancelled, stop := context.WithCancel(context.Background())
 	stop()
-	if _, err := Replay(cancelled, b, cfg); err == nil {
+	if _, err := Replay(cancelled, b, cfg, nil); err == nil {
 		t.Fatal("accepted canceled replay")
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() == 0 {

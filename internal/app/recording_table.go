@@ -7,10 +7,23 @@ import (
 	"strings"
 	"time"
 
+	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
+
+func (a *application) visibleReplayProgressChanged(previous map[string]recording.ReplayProgress) bool {
+	first, last := a.recordList.List.Visible()
+	for row := max(0, first); row <= min(last, a.recordList.Rows()-1); row++ {
+		key := a.recordList.Item(row)
+		g := a.recordTree.groups[key.ID]
+		if key.Group && g.broadcast.ReplayPending && !g.active && previous[key.ID] != a.replayProgress[key.ID] {
+			return true
+		}
+	}
+	return false
+}
 
 func (a *application) recordings(c *ui.Context) {
 	t := c.Theme()
@@ -142,8 +155,8 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 			if g.files == 0 {
 				detail = "Replay only"
 			}
-			ui.Text(c, detail).FontSize(12).SingleLine()
 			status, color := "Captured", t.TextMuted
+			progressHint := ""
 			switch {
 			case g.active:
 				status, color = "Recording…", t.Success
@@ -151,7 +164,15 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 					status = "Recording · saved replay"
 				}
 			case g.broadcast.ReplayPending:
-				status, color = "Creating replay…", t.Warning
+				progressHint = detail + "\nProgress is for the current stage."
+				detail = "Creating replay…"
+				status, color = "Queued…", t.Warning
+				if p, ok := a.replayProgress[g.broadcast.ID]; ok {
+					status = p.Stage + "…"
+					if p.Percent >= 0 {
+						status = fmt.Sprintf("%s %d%%", p.Stage, p.Percent)
+					}
+				}
 			case g.broadcast.ReplayError != "":
 				status, color = "Replay needs attention", t.Warning
 			case g.replayIsPartial():
@@ -160,9 +181,13 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 				status, color = "Replay ready", t.Success
 			}
 			hint := g.broadcast.ReplayError
+			if progressHint != "" {
+				hint = progressHint
+			}
 			if hint == "" && g.broadcast.ReplayPath != "" {
 				hint = g.replayHint()
 			}
+			ui.Text(c, detail).FontSize(12).SingleLine().Tooltip(hint)
 			ui.Text(c, status).FontSize(11).TextColor(color).SingleLine().Tooltip(hint)
 		})
 	case 5:
