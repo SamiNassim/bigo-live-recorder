@@ -51,8 +51,10 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 			continue
 		}
 		if f.video {
+			var ready bool
+			f, ready = c.videoHeaders.prepare(f)
 			if !firstVideo.key {
-				if !f.key {
+				if !ready {
 					continue
 				}
 				firstVideo = f
@@ -127,7 +129,9 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			continue
 		}
 		if f.video {
-			if !f.key {
+			var ready bool
+			f, ready = c.videoHeaders.prepare(f)
+			if !ready {
 				continue
 			}
 			_, err := c.videoBoundary(f, &mux, config)

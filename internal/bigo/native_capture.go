@@ -35,6 +35,7 @@ type nativeCapture struct {
 	guest             bool
 	epoch             time.Time
 	timing            *CaptureTiming
+	videoHeaders      nativeVideoHeaders
 }
 
 type nativeVideoGOP struct {
@@ -415,6 +416,9 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 			continue
 		}
 		if f.video {
+			if c.guest {
+				f, _ = c.videoHeaders.prepare(f)
+			}
 			fresh, err := nativeVideoType(f.codec)
 			if err != nil {
 				writer.CloseWithError(err)

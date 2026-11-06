@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/bigo"
+	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/state"
 )
 
@@ -50,6 +51,61 @@ func TestGuestRoomModeChangeFinalizesCaptureWithoutClosingBroadcast(t *testing.T
 	}
 }
 func (r *fixtureGuestRoom) Close() error { r.once.Do(func() { close(r.guests) }); return nil }
+
+func TestGuestMissingVideoHeadersDoesNotStopTheRoom(t *testing.T) {
+	ffmpeg, err := FindFFmpeg("")
+	if err != nil {
+		t.Skip("FFmpeg is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	fixture := fileFixture(t, ffmpeg, "libx264", "64x96")
+	good, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the advertised tracks, but no elementary media or codec headers.
+	var bad []byte
+	for offset := 0; offset+188 <= len(good); offset += 188 {
+		packet := good[offset : offset+188]
+		pid := uint16(packet[1]&31)<<8 | uint16(packet[2])
+		if pid == 0 || pid == 4096 {
+			bad = append(bad, packet...)
+		}
+	}
+	room := &fixtureGuestRoom{guests: make(chan bigo.Participant, 2)}
+	for i, data := range [][]byte{bad, good} {
+		room.guests <- bigo.Participant{UID: 900000001 + uint32(i), Capture: &fixtureCapture{parts: []*bigo.CapturePart{{ReadCloser: io.NopCloser(bytes.NewReader(data))}}}}
+	}
+	cfg := state.Defaults()
+	cfg.RecordingPath = t.TempDir()
+	h := startGuestRoom(ctx, cancel, ffmpeg, state.Streamer{ID: "host.example"}, cfg, room, nil)
+	defer h.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	finalized := make(map[uint32]Result)
+	for len(finalized) < 2 {
+		for _, change := range h.DrainFileChanges() {
+			if change.Result != nil {
+				finalized[change.Guest.UID] = *change.Result
+			}
+		}
+		select {
+		case <-h.Done():
+			t.Fatal("a guest without video headers stopped the room", h.Result())
+		case <-ctx.Done():
+			t.Fatal("guest finalization stalled", ctx.Err())
+		case <-tick.C:
+		}
+	}
+	failed, saved := finalized[900000001], finalized[900000002]
+	if failed.Err == nil || fault.RequiresAction(failed.Err) || !strings.Contains(fault.Details(failed.Err), "dimensions not set") {
+		t.Fatal("guest source failure was not retained correctly", failed)
+	}
+	if saved.Err != nil || saved.Bytes == 0 {
+		t.Fatal("healthy guest recording failed", saved)
+	}
+}
 
 func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 	ffmpeg, err := FindFFmpeg("")

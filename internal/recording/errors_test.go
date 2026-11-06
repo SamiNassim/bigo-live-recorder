@@ -9,6 +9,20 @@ import (
 	"bigo-live-recorder/internal/fault"
 )
 
+func TestRecordingMissingVideoHeadersKeepsDiagnosticsWithoutRequiringAction(t *testing.T) {
+	cause := errors.New("synthetic process failure")
+	stderr := "dimensions not set\nCould not write header"
+	err := recordingFFmpegFailure(ffmpegCause(cause, stderr), stderr)
+	if fault.RequiresAction(err) || !errors.Is(err, cause) || !strings.Contains(fault.Reason(err), "codec headers") || !strings.Contains(fault.Details(err), stderr) {
+		t.Fatal("source failure lost its meaning or diagnostics", err, fault.Details(err))
+	}
+	for _, local := range []string{"No space left on device", "not enough space on the disk", "Permission denied", "Access is denied"} {
+		if err := recordingFFmpegFailure(cause, stderr+"\n"+local); !fault.RequiresAction(err) {
+			t.Fatal("a local failure was treated as a transient guest source", err)
+		}
+	}
+}
+
 func TestProcessingFailureExplainsCauseWithoutLosingFFmpegOutput(t *testing.T) {
 	for _, test := range []struct {
 		stderr, want string

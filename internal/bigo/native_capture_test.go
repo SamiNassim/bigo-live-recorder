@@ -24,7 +24,16 @@ func nativeCaptureFixture(t *testing.T, frames []nativeMediaFrame) *nativeCaptur
 }
 
 func nativeCaptureVideo(pts uint32, key bool, codec byte, id byte) nativeMediaFrame {
-	return nativeMediaFrame{video: true, key: key, codec: codec, pts: pts, dts: pts, data: []byte{0, 0, 0, 1, 0x26, 1, id}}
+	data := []byte{0, 0, 0, 1, 0x26, 1, id}
+	if codec == 0 || codec == 2 || codec == 3 {
+		data = []byte{0, 0, 0, 1, 0x65, id}
+		if key {
+			data = append([]byte{0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 1}, data...)
+		}
+	} else if key {
+		data = append([]byte{0, 0, 0, 1, 0x40, 1, 0, 0, 1, 0x42, 1, 0, 0, 1, 0x44, 1}, data...)
+	}
+	return nativeMediaFrame{video: true, key: key, codec: codec, pts: pts, dts: pts, data: data}
 }
 func nativeCaptureAudio(pts uint32) nativeMediaFrame {
 	return nativeMediaFrame{pts: pts, dts: pts, data: []byte{0xff, 0xf1, 0x50, 0x80, 0x01, 0x1f, 0xfc, 0x21}}

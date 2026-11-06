@@ -13,6 +13,47 @@ func guestAudio(pts uint32) nativeMediaFrame {
 	return nativeMediaFrame{pts: pts, dts: pts, codec: 7, data: []byte{0xfc, 0xff, 0xfe}}
 }
 
+func TestGuestCaptureWaitsForVideoHeadersAndPreservesAudio(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		frames := []nativeMediaFrame{guestAudio(1000), {video: true, key: true, codec: 2, pts: 1000, dts: 1000, data: []byte{0, 0, 1, 0x65, 1}}, guestAudio(1020)}
+		if ready {
+			frames = append(frames, nativeCaptureVideo(1040, true, 2, 2))
+		}
+		c := nativeCaptureFixture(t, frames)
+		c.guest = true
+		part, err := c.Next(context.Background())
+		if err != nil || part.AudioOnly == ready {
+			t.Fatal("opened a video file without usable headers", err)
+		}
+		data, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := nativeCapturePayloads(t, data)
+		wantVideo := 0
+		if ready {
+			wantVideo = 1
+		}
+		if len(got[256]) != wantVideo || len(got[257]) != 2 {
+			t.Fatal("startup lost audio or admitted undecodable video", len(got[256]), len(got[257]))
+		}
+	}
+}
+
+func TestGuestCaptureDoesNotCreateVideoFileForHeadersAlone(t *testing.T) {
+	for _, data := range [][]byte{
+		{0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 1},
+		{0, 0, 1, 0x65, 1},
+	} {
+		c := nativeCaptureFixture(t, []nativeMediaFrame{{video: true, key: true, codec: 2, data: data}})
+		c.guest = true
+		if part, err := c.Next(context.Background()); part != nil || !errors.Is(err, io.EOF) {
+			t.Fatal("incomplete startup created a fictitious video file", part, err)
+		}
+	}
+}
+
 func TestGuestCaptureRetainsAudioBeforeFirstCameraKeyframe(t *testing.T) {
 	c := nativeCaptureFixture(t, []nativeMediaFrame{guestAudio(1000), guestAudio(1020), nativeCaptureVideo(1040, true, 2, 1), guestAudio(1040), nativeCaptureVideo(1080, false, 2, 2), guestAudio(1060)})
 	c.guest = true

@@ -143,7 +143,7 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
 		if !canceled && copyErr != nil {
 			cause = errors.Join(copyErr, cause)
 		}
-		err = fault.Action(ffmpegMessage("finalize the recording", f.stderr.String()), cause)
+		err = recordingFFmpegFailure(cause, f.stderr.String())
 	} else if !canceled {
 		err = copyErr
 	}

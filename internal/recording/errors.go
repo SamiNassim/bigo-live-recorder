@@ -27,6 +27,19 @@ func ffmpegCause(err error, stderr string) error {
 	return fmt.Errorf("%w; FFmpeg output: %s", err, stderr)
 }
 
+func recordingFFmpegFailure(cause error, stderr string) error {
+	text := strings.ToLower(stderr)
+	// A participant can disappear before supplying its video headers. This is
+	// a source failure; canceling the whole guest room would stop healthy files.
+	missingHeaders := strings.Contains(text, "dimensions not set") && strings.Contains(text, "could not write header")
+	localFailure := strings.Contains(text, "no space left") || strings.Contains(text, "not enough space on the disk") ||
+		strings.Contains(text, "permission denied") || strings.Contains(text, "access is denied")
+	if missingHeaders && !localFailure {
+		return fault.Wrap("BIGO supplied video without usable codec headers; this recording file could not be finalized", cause)
+	}
+	return fault.Action(ffmpegMessage("finalize the recording", stderr), cause)
+}
+
 func ffmpegMessage(operation, stderr string) string {
 	message := "FFmpeg could not " + operation
 	text := strings.ToLower(stderr)
