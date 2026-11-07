@@ -78,6 +78,19 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 		}
 	}
 	waiting.finish(nil)
+	if firstVideo.key {
+		prefix, video, audio, err := c.guestStartupPrefix(ctx, waiting, firstVideo, config, base)
+		if err != nil {
+			return nil, err
+		}
+		waiting = prefix
+		if !video {
+			firstVideo = nativeMediaFrame{}
+		}
+		if !audio {
+			config = nativeAudioConfig{}
+		}
+	}
 	c.deferred = append([]*nativeFrameQueue{waiting}, c.deferred...)
 	owned = false
 	// A terminal transport error follows the already received media, rather
@@ -110,6 +123,75 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, AudioOnly: !firstVideo.key, Timing: c.timing}, nil
 }
 
+// Determine the tracks that can actually reach the first file before exposing
+// it to FFmpeg. A queued camera keyframe may belong to an earlier source clock;
+// declaring video and then rolling over before writing it loses the audio too.
+func (c *nativeCapture) guestStartupPrefix(ctx context.Context, waiting *nativeFrameQueue, first nativeMediaFrame, config nativeAudioConfig, base uint32) (*nativeFrameQueue, bool, bool, error) {
+	defer waiting.close()
+	prefix := newNativeFrameQueue(1 << 20)
+	var tail *nativeFrameQueue
+	owned := true
+	defer func() {
+		if owned {
+			prefix.close()
+			if tail != nil {
+				tail.close()
+			}
+		}
+	}()
+	codec, _ := nativeVideoType(first.codec)
+	clock := &nativeTSClock{started: true, base: base, codec: codec, lastPTS: -1}
+	probe := nativeTSMux{out: io.Discard, clock: clock, noAudio: config == (nativeAudioConfig{}), opus: config[0] == 7, startWithAudio: true, videoCodec: codec}
+	video, audio := false, false
+	for {
+		f, err := waiting.next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, false, false, err
+		}
+		if tail == nil {
+			fresh, _ := nativeVideoType(f.codec)
+			changed := f.video && fresh != codec || !f.video && audioConfig(f) != config
+			if !changed {
+				// Exercise the same clock checks without copying encoded media,
+				// writing packets to disk, or publishing timing samples twice.
+				metadata := f
+				metadata.data = nil
+				err = probe.writeFrame(metadata)
+				var clockErr nativeClockError
+				changed = errors.As(err, &clockErr)
+				if err != nil && !changed {
+					return nil, false, false, err
+				}
+			}
+			if changed {
+				if err := prefix.push(nativeMediaFrame{cut: true}); err != nil {
+					return nil, false, false, err
+				}
+				tail = newNativeFrameQueue(1 << 20)
+			} else {
+				video, audio = video || f.video, audio || !f.video
+			}
+		}
+		destination := prefix
+		if tail != nil {
+			destination = tail
+		}
+		if err := destination.push(f); err != nil {
+			return nil, false, false, err
+		}
+	}
+	prefix.finish(nil)
+	if tail != nil {
+		tail.finish(nil)
+		c.deferred = append([]*nativeFrameQueue{tail}, c.deferred...)
+	}
+	owned = false
+	return prefix, video, audio, nil
+}
+
 func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{}, config nativeAudioConfig) {
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
@@ -122,6 +204,11 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 				err = nil
 			}
 			writer.CloseWithError(err)
+			return
+		}
+		if f.cut {
+			c.guestStartupCut()
+			writer.Close()
 			return
 		}
 		if f.reset {
@@ -161,6 +248,11 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			return
 		}
 	}
+}
+
+func (c *nativeCapture) guestStartupCut() {
+	c.clearPreroll()
+	c.reason = "Guest media timing or encoding changed; continuing in a new original recording"
 }
 
 // A guest has no private socket to reconnect: the room owns its transports.

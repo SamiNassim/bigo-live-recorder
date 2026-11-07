@@ -15,7 +15,7 @@ func TestNativeCaptureBufferSpillsAndPreservesFrameOrder(t *testing.T) {
 	t.Cleanup(q.close)
 	var expected []nativeMediaFrame
 	for i := range 400 {
-		f := nativeMediaFrame{data: bytes.Repeat([]byte{byte(i)}, 9), pts: uint32(i), dts: uint32(i), video: i%2 == 0, key: i%7 == 0, codec: 2, reset: i == 55}
+		f := nativeMediaFrame{data: bytes.Repeat([]byte{byte(i)}, 9), pts: uint32(i), dts: uint32(i), video: i%2 == 0, key: i%7 == 0, codec: 2, reset: i == 55, cut: i == 56}
 		expected = append(expected, f)
 		if err := q.push(f); err != nil {
 			t.Fatal(err)
@@ -32,7 +32,7 @@ func TestNativeCaptureBufferSpillsAndPreservesFrameOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.pts != want.pts || got.dts != want.dts || got.video != want.video || got.key != want.key || got.codec != want.codec || got.reset != want.reset || !bytes.Equal(got.data, want.data) {
+		if got.pts != want.pts || got.dts != want.dts || got.video != want.video || got.key != want.key || got.codec != want.codec || got.reset != want.reset || got.cut != want.cut || !bytes.Equal(got.data, want.data) {
 			t.Fatal("capture frame changed", i)
 		}
 	}

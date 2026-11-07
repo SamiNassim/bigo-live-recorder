@@ -65,6 +65,7 @@ type nativeMediaFrame struct {
 	video, key bool
 	codec      byte
 	reset      bool
+	cut        bool // Internal file boundary, never supplied by the wire protocol.
 	received   int64
 }
 

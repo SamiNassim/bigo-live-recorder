@@ -406,6 +406,11 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 			writer.CloseWithError(err)
 			return
 		}
+		if f.cut {
+			c.guestStartupCut()
+			writer.Close()
+			return
+		}
 		if f.reset {
 			c.clearPreroll()
 			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, timing: c.timing}

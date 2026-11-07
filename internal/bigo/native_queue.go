@@ -78,6 +78,9 @@ func (q *nativeFrameQueue) push(f nativeMediaFrame) error {
 		if f.reset {
 			header[13] |= 4
 		}
+		if f.cut {
+			header[13] |= 8
+		}
 		if n, err := q.file.WriteAt(header[:], q.written); err != nil {
 			return fault.Action("could not buffer incoming stream data on disk; check disk space and temporary folder permissions", err)
 		} else if n != len(header) {
@@ -140,7 +143,7 @@ func (q *nativeFrameQueue) readFrame() (nativeMediaFrame, error) {
 	if size > maxNativeFrameBytes || int64(size) > q.written-q.read-24 {
 		return nativeMediaFrame{}, fault.Action("buffered stream data could not be read safely", errors.New("invalid BIGO capture buffer frame"))
 	}
-	f := nativeMediaFrame{data: make([]byte, size), pts: binary.LittleEndian.Uint32(header[4:8]), dts: binary.LittleEndian.Uint32(header[8:12]), codec: header[12], video: header[13]&1 != 0, key: header[13]&2 != 0, reset: header[13]&4 != 0}
+	f := nativeMediaFrame{data: make([]byte, size), pts: binary.LittleEndian.Uint32(header[4:8]), dts: binary.LittleEndian.Uint32(header[8:12]), codec: header[12], video: header[13]&1 != 0, key: header[13]&2 != 0, reset: header[13]&4 != 0, cut: header[13]&8 != 0}
 	f.received = int64(binary.LittleEndian.Uint64(header[16:]))
 	if _, err := q.file.ReadAt(f.data, q.read+24); err != nil {
 		return nativeMediaFrame{}, fault.Action("could not read buffered stream data from disk", err)
