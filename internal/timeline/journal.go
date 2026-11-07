@@ -27,6 +27,7 @@ type Entry struct {
 	Epoch     time.Time `json:"epoch,omitempty"`
 	At        time.Time `json:"at,omitempty"`
 	Error     string    `json:"error,omitempty"`
+	NoMedia   bool      `json:"no_media,omitempty"` // Finalization confirmed no saved media.
 }
 
 type Journal struct {

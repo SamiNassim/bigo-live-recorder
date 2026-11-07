@@ -136,7 +136,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	return f, nil
 }
 
-func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
+func (f *fileWriter) result(copyErr, waitErr error, canceled bool) (Result, bool) {
 	var err error
 	if waitErr != nil {
 		cause := ffmpegCause(waitErr, f.stderr.String())
@@ -148,33 +148,44 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) Result {
 		err = copyErr
 	}
 	var size int64
+	noMedia := false
 	if info, statErr := os.Stat(f.path); statErr == nil {
 		size = info.Size()
+		noMedia = info.Mode().IsRegular() && size == 0
+	} else if waitErr != nil && errors.Is(statErr, os.ErrNotExist) {
+		// Confirm the destination is accessible before recording an absent
+		// output. A disconnected disk leaves the outcome unknown.
+		dir, err := os.Stat(filepath.Dir(f.path))
+		noMedia = err == nil && dir.IsDir()
 	}
 	if size == 0 && err == nil {
 		err = fault.Action("FFmpeg produced no saved media", errors.New("recording file is empty or missing"))
 	}
-	return Result{Path: f.path, Bytes: size, EndedAt: time.Now(), Err: err}
+	return Result{Path: f.path, Bytes: size, EndedAt: time.Now(), Err: err}, noMedia
 }
 
 func (f *fileWriter) finish(copyErr error, canceled bool) Result {
 	f.stdin.Close()
 	f.part.Close()
+	var waitErr error
+	if f.exitErr != nil {
+		waitErr = *f.exitErr
+	} else {
+		waitErr = finish(f.cmd, f.waited)
+	}
+	result, noMedia := f.result(copyErr, waitErr, canceled)
 	f.timingOnce.Do(func() {
 		if f.timing != nil {
 			f.part.Timing.Observe(nil)
 			err := f.timing.Close()
-			entry := timeline.Entry{Kind: "file_end", File: filepath.Base(f.path), At: time.Now()}
+			entry := timeline.Entry{Kind: "file_end", File: filepath.Base(f.path), At: result.EndedAt, NoMedia: noMedia}
 			if err != nil {
 				entry.Error = err.Error()
 			}
 			f.journal.Append(entry)
 		}
 	})
-	if f.exitErr != nil {
-		return f.result(copyErr, *f.exitErr, canceled)
-	}
-	return f.result(copyErr, finish(f.cmd, f.waited), canceled)
+	return result
 }
 
 func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *fileWriter, ffmpeg string, s state.Streamer, cfg state.Config, report func(string, string), settings ...captureOptions) {

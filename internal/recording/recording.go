@@ -120,7 +120,8 @@ func recordingArgs(stream io.ReadCloser, path string) []string {
 	if clock, ok := stream.(interface{ NativeTimestamps() bool }); ok && clock.NativeTimestamps() {
 		// Native recovery already normalizes both tracks onto one clock. The
 		// MPEG-TS discontinuity fixer can otherwise shift them independently.
-		args = append(args, "-copyts", "-start_at_zero")
+		// A short native capture can contain too few TS packets for format probing.
+		args = append(args, "-copyts", "-start_at_zero", "-f", "mpegts")
 	}
 	return append(args, "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
 }

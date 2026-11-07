@@ -203,13 +203,21 @@ func ReconcileThrough(ctx context.Context, dir string, probe Probe, through time
 		if err := ctx.Err(); err != nil {
 			return Plan{}, err
 		}
-		path, err := LocalPath(dir, entry.File)
-		if err != nil {
-			return Plan{}, fmt.Errorf("read original guest media: %w", err)
-		}
 		end, closed := finished[entry.File]
 		if !through.IsZero() && (!closed || end.At.After(through)) {
 			return Plan{}, errors.New("guest recordings are still being finalized; retry after capture finishes")
+		}
+		path, err := LocalPath(dir, entry.File)
+		if err != nil {
+			if closed && end.NoMedia && errors.Is(err, os.ErrNotExist) {
+				// The finalizer observed no output. A broken symlink is
+				// still a path error, even if its target is missing.
+				if _, statErr := os.Lstat(filepath.Join(dir, entry.File)); errors.Is(statErr, os.ErrNotExist) {
+					plan.Warnings = append(plan.Warnings, "Guest recording attempt saved no media: "+entry.File)
+					continue
+				}
+			}
+			return Plan{}, fmt.Errorf("read original guest media: %w", err)
 		}
 		info, err := os.Stat(path)
 		if err != nil {

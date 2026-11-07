@@ -17,7 +17,100 @@ import (
 
 	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/state"
+	"bigo-live-recorder/internal/timeline"
 )
+
+func TestFinalizationRecordsWhetherGuestMediaWasSaved(t *testing.T) {
+	ffmpeg, err := FindFFmpeg("")
+	if err != nil {
+		t.Skip("FFmpeg is not installed")
+	}
+	dir := t.TempDir()
+	journal, err := timeline.Open(dir, "fixture-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	media, err := os.ReadFile(fileFixture(t, ffmpeg, "libx264", "64x96"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{nil, media} {
+		part := &bigo.CapturePart{
+			ReadCloser: io.NopCloser(bytes.NewReader(data)),
+			Directory:  dir,
+			Timing:     &bigo.CaptureTiming{Epoch: time.Unix(1900000000, 0)},
+		}
+		writer, err := startFile(ffmpeg, state.Streamer{ID: "host.example"}, state.Defaults(), part, captureOptions{timing: journal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := writer.finish(<-writer.copied, false)
+		entries, err := timeline.Read(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := entries[len(entries)-1]
+		wantNoMedia := len(data) == 0
+		if end.Kind != "file_end" || end.File != filepath.Base(result.Path) || end.NoMedia != wantNoMedia || !end.At.Equal(result.EndedAt) {
+			t.Fatal("incorrect finalization evidence", end)
+		}
+		if (result.Bytes == 0) != wantNoMedia || (result.Err != nil) != wantNoMedia {
+			t.Fatal("incorrect recording result", result)
+		}
+	}
+}
+
+func TestNativeCaptureSavesVeryShortVideo(t *testing.T) {
+	ffmpeg, err := FindFFmpeg("")
+	if err != nil {
+		t.Skip("FFmpeg is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	generate := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+		"-f", "lavfi", "-i", "color=c=black:s=64x96:r=25", "-frames:v", "2",
+		"-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-threads", "1",
+		"-bsf:v", "filter_units=remove_types=6", "-muxdelay", "0", "-f", "mpegts", "pipe:1")
+	configureCommand(generate)
+	transport, err := generate.Output()
+	if err != nil {
+		t.Fatal("generate short video", err)
+	}
+	// The native transport emits program tables and media without an SDT.
+	// Keep the fixture short enough to reproduce ambiguous input probing.
+	var input []byte
+	for offset := 0; offset+188 <= len(transport); offset += 188 {
+		packet := transport[offset : offset+188]
+		pid := uint16(packet[1]&31)<<8 | uint16(packet[2])
+		if pid != 17 {
+			input = append(input, packet...)
+		}
+	}
+	if len(input) != 4*188 {
+		t.Fatal("expected two tables and two video packets", len(input))
+	}
+	part := &bigo.CapturePart{ReadCloser: io.NopCloser(bytes.NewReader(input)), Native: true}
+	capture := &fixtureCapture{parts: []*bigo.CapturePart{part}}
+	cfg := state.Defaults()
+	cfg.RecordingPath = t.TempDir()
+	h, err := startCapture(ctx, cancel, ffmpeg, state.Streamer{ID: "host.example"}, cfg, capture, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := h.Result()
+	if result.Err != nil || result.Bytes == 0 {
+		t.Fatal("short native recording was not saved", result.Err)
+	}
+	// The capture cancels its context on completion. Inspect the saved file
+	// with a fresh deadline.
+	probeCtx, stopProbe := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopProbe()
+	tracks, err := inspectReplayMedia(probeCtx, ffmpeg, result.Path)
+	if err != nil || len(tracks) != 1 || !tracks[0].Video || tracks[0].Packets != 2 {
+		t.Fatal("short native recording lost video", tracks, err)
+	}
+}
 
 type fixtureCapture struct {
 	mu      sync.Mutex

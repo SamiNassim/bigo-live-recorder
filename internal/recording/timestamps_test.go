@@ -26,8 +26,8 @@ func TestRecordingPreservesOnlyNativeNormalizedTimestamps(t *testing.T) {
 			stream = nativeClockReader{stream}
 		}
 		args := recordingArgs(stream, "recording.mkv")
-		if slices.Contains(args, "-copyts") != native || slices.Contains(args, "-start_at_zero") != native {
-			t.Fatal("wrong clock policy", native, args)
+		if slices.Contains(args, "-copyts") != native || slices.Contains(args, "-start_at_zero") != native || slices.Contains(args, "mpegts") != native {
+			t.Fatal("wrong input policy", native, args)
 		}
 	}
 }
