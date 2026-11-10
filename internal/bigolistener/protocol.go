@@ -37,8 +37,9 @@ const (
 	uriLiveStartNotifyAck    = 525079
 	uriNewLiveNotify         = 525335
 
-	protocolStatusOK = 200
-	protocolAppID    = 60
+	protocolStatusOK            = 200
+	protocolAppID               = 60
+	protocolPrepareIPRestricted = 10
 	// AddFollow returns 8 when the requested relationship already exists. The
 	// desired postcondition is already satisfied, so notification setup must
 	// continue instead of treating a restart as a failed subscription.
@@ -55,6 +56,7 @@ const (
 )
 
 var errProtocolRejected = errors.New("BIGO rejected the native Linkd request")
+var errLinkdIPRestricted = fmt.Errorf("%w: source IP restricted", errProtocolRejected)
 
 type linkdFrame struct {
 	URI    int32
@@ -383,7 +385,7 @@ func writeAll(conn net.Conn, data []byte) error {
 	return nil
 }
 
-func dialLinkd(ctx context.Context, session Session) (*linkdClient, string, error) {
+func dialLinkd(ctx context.Context, session Session, dial func(context.Context, string, Session) (*linkdClient, error)) (*linkdClient, string, error) {
 	if err := session.Validate(); err != nil {
 		return nil, "", err
 	}
@@ -394,11 +396,11 @@ func dialLinkd(ctx context.Context, session Session) (*linkdClient, string, erro
 			failures = append(failures, err.Error())
 			continue
 		}
-		client, err := dialOneLinkd(ctx, address, session)
+		client, err := dial(ctx, address, session)
 		if err == nil {
 			return client, address, nil
 		}
-		if errors.Is(err, errProtocolRejected) {
+		if errors.Is(err, errProtocolRejected) && !errors.Is(err, errLinkdIPRestricted) {
 			return nil, "", err
 		}
 		failures = append(failures, address+": "+err.Error())
@@ -801,7 +803,11 @@ func (c *linkdClient) login(ctx context.Context) error {
 		return errors.New("decode BIGO prepare-login response result")
 	}
 	if result != protocolStatusOK {
-		return fmt.Errorf("%w: web-issued ticket uid=%d prepare-login result=%d", errProtocolRejected, uint32(responseUID), result)
+		rejection := errProtocolRejected
+		if result == protocolPrepareIPRestricted {
+			rejection = errLinkdIPRestricted
+		}
+		return fmt.Errorf("%w: web-issued ticket uid=%d prepare-login result=%d", rejection, uint32(responseUID), result)
 	}
 	if uint32(responseUID) != c.session.UID {
 		return errors.New("BIGO prepare-login returned a different account uid")

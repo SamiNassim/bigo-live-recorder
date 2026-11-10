@@ -4,11 +4,100 @@ import (
 	"bytes"
 	"context"
 	"crypto/rc4"
+	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestLinkdAddressFailoverForPrepareLoginIPRestriction(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		prepare, login int32
+		secondPrepare  int32
+		wantAttempts   int
+		wantError      string
+	}{
+		{name: "IP restriction during prepare", prepare: 10, wantAttempts: 2},
+		{name: "all addresses restricted", prepare: 10, secondPrepare: 10, wantAttempts: 2, wantError: "prepare-login result=10"},
+		{name: "other prepare rejection", prepare: 9, wantAttempts: 1, wantError: "prepare-login result=9"},
+		{name: "same code during final login", prepare: protocolStatusOK, login: 10, wantAttempts: 1, wantError: "login result=10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			session := validTestSession()
+			session.LinkdAddresses = []string{"first.example:1234", "second.example:1234"}
+			var attempts []string
+			client, address, err := dialLinkd(ctx, session, func(ctx context.Context, address string, _ Session) (*linkdClient, error) {
+				attempts = append(attempts, address)
+				if address == session.LinkdAddresses[0] {
+					return nil, testLoginRejection(t, ctx, test.prepare, test.login)
+				}
+				if test.secondPrepare != 0 {
+					return nil, testLoginRejection(t, ctx, test.secondPrepare, 0)
+				}
+				return &linkdClient{}, nil
+			})
+			if !slices.Equal(attempts, session.LinkdAddresses[:test.wantAttempts]) {
+				t.Fatalf("dialed %v, want %v, error %v", attempts, session.LinkdAddresses[:test.wantAttempts], err)
+			}
+			if test.wantError == "" {
+				if err != nil || client == nil || address != session.LinkdAddresses[1] {
+					t.Fatalf("fallback connection failed: address %q, error %v", address, err)
+				}
+				return
+			}
+			if err == nil || client != nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("expected %q in the connection error, got %v", test.wantError, err)
+			}
+			if test.secondPrepare != 0 {
+				for _, address := range attempts {
+					if !strings.Contains(err.Error(), address) {
+						t.Fatalf("missing failed address %q in %v", address, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func testLoginRejection(t *testing.T, ctx context.Context, prepare, login int32) error {
+	t.Helper()
+	_, client, server := queryTestConnection(t)
+	done := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		done <- func() error {
+			if _, err := server.awaitURI(ctx, uriPrepareLogin); err != nil {
+				return err
+			}
+			body := &wireWriter{}
+			body.u32(client.session.UID)
+			body.i32(prepare)
+			if err := server.sendFrame(uriPrepareLoginRes, body.Bytes()); err != nil || prepare != protocolStatusOK {
+				return err
+			}
+			if _, err := server.awaitURI(ctx, uriLogin); err != nil {
+				return err
+			}
+			body.Reset()
+			body.i32(login)
+			return server.sendFrame(uriLoginRes, body.Bytes())
+		}()
+	}()
+	err := client.login(ctx)
+	if serverErr := <-done; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+	if !errors.Is(err, errProtocolRejected) {
+		t.Fatalf("expected a protocol rejection, got %v", err)
+	}
+	return err
+}
 
 func TestLoginUsesWebTicketAndVerifiedNativeIdentity(t *testing.T) {
 	for _, username := range []string{"viewer-account", "0"} {

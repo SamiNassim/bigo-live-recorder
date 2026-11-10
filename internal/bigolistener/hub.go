@@ -129,7 +129,7 @@ func NewHub(parent context.Context, source SessionSource, info, warning func(str
 			Message: "Initializing the BIGO native listener.",
 		},
 		dial: func(ctx context.Context, session Session) (hubClient, string, error) {
-			return dialLinkd(ctx, session)
+			return dialLinkd(ctx, session, dialOneLinkd)
 		},
 	}
 	h.wg.Add(1)
