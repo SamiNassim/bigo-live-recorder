@@ -117,13 +117,22 @@ func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string,
 
 func recordingArgs(stream io.ReadCloser, path string) []string {
 	args := []string{"-hide_banner", "-loglevel", "warning", "-nostats", "-n"}
-	if clock, ok := stream.(interface{ NativeTimestamps() bool }); ok && clock.NativeTimestamps() {
+	clock, ok := stream.(interface{ NativeTimestamps() bool })
+	native := ok && clock.NativeTimestamps()
+	if native {
 		// Native recovery already normalizes both tracks onto one clock. The
 		// MPEG-TS discontinuity fixer can otherwise shift them independently.
 		// A short native capture can contain too few TS packets for format probing.
 		args = append(args, "-copyts", "-start_at_zero", "-f", "mpegts")
 	}
-	return append(args, "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
+	args = append(args, "-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy")
+	if !native {
+		// The web feed can have a stray video PTS even when DTS is continuous.
+		// Use DTS when PTS leads by over ten seconds. FFmpeg uses MinInt64
+		// for a missing timestamp.
+		args = append(args, "-bsf:v", `setts=pts='if(gt((PTS-DTS)*TB,10)*gt(DTS,-9223372036854775808),DTS,PTS)'`)
+	}
+	return append(args, "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
 }
 
 func recordingPath(s state.Streamer, cfg state.Config, stamp time.Time, suffix string) string {
