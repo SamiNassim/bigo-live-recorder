@@ -217,6 +217,16 @@ version until the next rebuild finishes. The video does not grow during playback
 a rebuilt and validated replay replaces the previous file. Use the broadcast's
 right-click menu to **Rebuild room replay** after its guest recordings finish.
 
+### Split long recordings
+
+In **Settings → Recording → Split recordings every**, choose **30 minutes**,
+**1 hour**, or **Custom** and enter a duration in minutes. The default is **Off**.
+Save the setting before starting a recording. The recorder saves each clip as it
+goes, in one folder per broadcast. Expand the broadcast in **Recordings** to open
+completed clips while the stream is still live. The group shows the full recording
+span, and each clip has its own duration. Video splits at a keyframe.
+If you enable optional FFmpeg processing, it runs for each completed clip.
+
 ### Optional FFmpeg processing
 
 Choose **Settings → Recording → Create a processed copy with FFmpeg**, then select
