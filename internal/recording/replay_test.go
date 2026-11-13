@@ -91,27 +91,37 @@ func TestReplayRendersCameraChangesAndKeepsOriginals(t *testing.T) {
 		t.Fatal(err)
 	}
 	checksums := make(map[string][32]byte)
+	render := func(args ...string) {
+		t.Helper()
+		if out, err := exec.CommandContext(ctx, ff, append([]string{"-hide_banner", "-loglevel", "error", "-nostdin"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("create source: %v: %s", err, out)
+		}
+	}
 	makeSource := func(name string, uid, base uint32, start, duration float64, color string) {
 		t.Helper()
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
-		if color != "" {
-			args = append(args, "-f", "lavfi", "-i", "color=c="+color+":s=64x96:r=25")
-		}
-		frequency := 440
-		if uid == 900000002 {
-			frequency = 880
-		}
-		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("sine=f=%d:r=48000", frequency), "-t", fmt.Sprintf("%.3f", duration))
-		if uid == 900000002 {
-			args = append(args, "-af", "aselect='not(between(t,0.15,0.45))'")
-		}
-		if color != "" {
-			args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1")
-		}
 		path := filepath.Join(dir, name)
-		args = append(args, "-c:a", "pcm_s16le", "-f", "matroska", path)
-		if out, err := exec.CommandContext(ctx, ff, args...).CombinedOutput(); err != nil {
-			t.Fatalf("create source: %v: %s", err, out)
+		if uid == 900000002 {
+			// Some FFmpeg versions close gaps when encoding PCM after a
+			// filter. Stream-copy the tone sections onto a sparse timeline.
+			fixture := t.TempDir()
+			tone := "sine=f=880:r=48000:samples_per_frame=960"
+			render("-f", "lavfi", "-i", tone, "-t", "0.16", "-c:a", "pcm_s16le", filepath.Join(fixture, "before-gap.mka"))
+			render("-f", "lavfi", "-i", tone, "-t", fmt.Sprintf("%.3f", duration-.46), "-c:a", "pcm_s16le", filepath.Join(fixture, "after-gap.mka"))
+			list := filepath.Join(fixture, "audio.ffconcat")
+			if err := os.WriteFile(list, []byte("file before-gap.mka\nduration 0.46\nfile after-gap.mka\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			render("-f", "concat", "-safe", "1", "-i", list, "-c", "copy", path)
+		} else {
+			var args []string
+			if color != "" {
+				args = append(args, "-f", "lavfi", "-i", "color=c="+color+":s=64x96:r=25")
+			}
+			args = append(args, "-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", fmt.Sprintf("%.3f", duration))
+			if color != "" {
+				args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1")
+			}
+			render(append(args, "-c:a", "pcm_s16le", "-f", "matroska", path)...)
 		}
 		data, _ := os.ReadFile(path)
 		checksums[path] = sha256.Sum256(data)
