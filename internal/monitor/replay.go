@@ -65,6 +65,9 @@ func replayCutoff(d state.Data, id string) (time.Time, bool) {
 func (e *Engine) resumeReplays() {
 	d := e.store.Data()
 	for _, b := range d.Broadcasts {
+		if b.Segmented {
+			continue
+		}
 		cutoff, ready := replayCutoff(d, b.ID)
 		if !ready || cutoff.IsZero() || b.ReplayError != "" || !b.ReplayPending && !cutoff.After(b.ReplayThrough) {
 			continue
@@ -95,6 +98,9 @@ func (e *Engine) QueueReplay(id string) error {
 			return errors.New("the broadcast is no longer in recording history")
 		}
 		b := &d.Broadcasts[index]
+		if b.Segmented {
+			return errors.New("room replay is available for multi-guest broadcasts")
+		}
 		cutoff, ready := replayCutoff(*d, id)
 		if !ready {
 			return errors.New("guest recordings are still being finalized")

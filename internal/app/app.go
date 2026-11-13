@@ -81,6 +81,8 @@ type application struct {
 	ffmpegCancel                                 context.CancelFunc
 
 	normalSeconds, coldSeconds, delaySeconds float64
+	splitChoice                              string
+	splitMinutes                             float64
 	cookieEditedAt                           time.Time
 	cookieLastChecked                        string
 }
@@ -103,6 +105,18 @@ func (a *application) loadNumbers() {
 	a.normalSeconds = float64(a.cfg.PollSeconds)
 	a.coldSeconds = float64(a.cfg.ColdSeconds)
 	a.delaySeconds = float64(a.cfg.RequestDelaySeconds)
+	a.splitMinutes = float64(a.cfg.SplitMinutes)
+	switch a.cfg.SplitMinutes {
+	case 0:
+		a.splitChoice = "Off"
+		a.splitMinutes = 30
+	case 30:
+		a.splitChoice = "30 minutes"
+	case 60:
+		a.splitChoice = "1 hour"
+	default:
+		a.splitChoice = "Custom"
+	}
 }
 func (a *application) update(fn func()) {
 	if a.window != nil {

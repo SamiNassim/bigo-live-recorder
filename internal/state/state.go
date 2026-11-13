@@ -28,11 +28,15 @@ type Config struct {
 	AutoPromote         bool   `json:"auto_promote"`
 	Notifications       bool   `json:"notifications"`
 	FolderPerStreamer   bool   `json:"folder_per_streamer"`
+	SplitMinutes        int    `json:"split_minutes,omitempty"`
 	PostProcess         bool   `json:"post_process"`
 	FFmpegArgs          string `json:"ffmpeg_args"`
 	OutputExtension     string `json:"output_extension"`
 	StreamQuality       string `json:"stream_quality,omitempty"`
 }
+
+// Native timestamp differences use signed 32-bit milliseconds.
+const MaxSplitMinutes = (1<<31 - 1) / 60_000
 
 // Origin uses native media; auto keeps the web player's automatic rendition.
 var StreamQualities = []string{"origin", "auto"}
@@ -101,6 +105,7 @@ type Broadcast struct {
 	Directory     string    `json:"directory"`
 	StartedAt     time.Time `json:"started_at"`
 	EndedAt       time.Time `json:"ended_at,omitempty"`
+	Segmented     bool      `json:"segmented,omitempty"`
 	Notified      bool      `json:"notified,omitempty"`
 	Files         int       `json:"files"`
 	Bytes         int64     `json:"bytes"`
@@ -143,6 +148,9 @@ func (c Config) Validate() error {
 	}
 	if c.RequestDelaySeconds < 1 || c.RequestDelaySeconds > 30 {
 		return errors.New("request delay must be between 1 and 30 seconds")
+	}
+	if c.SplitMinutes < 0 || c.SplitMinutes > MaxSplitMinutes {
+		return fmt.Errorf("recording split interval must be between 0 and %d minutes", MaxSplitMinutes)
 	}
 	if c.OutputExtension != "mkv" && c.OutputExtension != "mp4" && c.OutputExtension != "ts" {
 		return errors.New("choose MKV, MP4, or TS for the optional processed copy")

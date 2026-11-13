@@ -404,6 +404,14 @@ func (a *application) settings(c *ui.Context) {
 				}
 			})
 			ui.Text(c, "Origin uses native live notifications and falls back to the web stream if native media cannot start. With native notifications disabled, recordings use the web stream.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "Split recordings every").Grow(1)
+				ui.Select(c, &a.splitChoice, []string{"Off", "30 minutes", "1 hour", "Custom"}).Width(170).Label("Split recordings every")
+			})
+			if a.splitChoice == "Custom" {
+				number(c, "Split interval (minutes)", &a.splitMinutes, 1, float64(state.MaxSplitMinutes))
+			}
+			ui.Text(c, "Applies to new recordings. Completed clips are available while the stream is live. Video splits at a keyframe.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
 			toggle(c, "Create a processed copy with FFmpeg", "Runs after the recording ends. The original MKV is always kept, even if processing fails.", &a.cfg.PostProcess)
 			ui.Column(c).FillWidth().Gap(10).Disabled(!a.cfg.PostProcess).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {

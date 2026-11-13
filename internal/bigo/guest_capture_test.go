@@ -122,6 +122,29 @@ func TestGuestAudioOnlyUpgradePreservesLateAudioAndCamera(t *testing.T) {
 	}
 }
 
+func TestGuestTimedAudioOnlySplitKeepsBoundaryAudio(t *testing.T) {
+	c := nativeCaptureFixture(t, []nativeMediaFrame{guestAudio(1000), guestAudio(1020), guestAudio(1040), guestAudio(1060), guestAudio(1080)})
+	c.guest = true
+	c.splitInterval = 40 * time.Millisecond
+	for i, want := range []int{2, 2, 1} {
+		part, err := c.Next(context.Background())
+		if err != nil || !part.AudioOnly || (i > 0 && part.Reason == "") {
+			t.Fatal("expected an audio-only part", i, err)
+		}
+		b, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(nativeCapturePayloads(t, b)[257]); got != want {
+			t.Fatalf("part %d: got %d audio packets, want %d", i, got, want)
+		}
+	}
+	if _, err := c.Next(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+}
+
 func TestGuestCameraGapDoesNotSplitTheFile(t *testing.T) {
 	c := nativeCaptureFixture(t, []nativeMediaFrame{nativeCaptureVideo(1000, true, 2, 1), guestAudio(1000), guestAudio(1020), guestAudio(1040), guestAudio(1060), nativeCaptureVideo(1080, true, 2, 2), guestAudio(1080)})
 	c.guest = true

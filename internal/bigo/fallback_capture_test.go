@@ -35,7 +35,7 @@ func (c *nativeUpgradeFixture) Close() error { c.closed.Store(true); return nil 
 func TestFailedNativeOpenReturnsNoCapture(t *testing.T) {
 	// An empty native route list fails before any network connection. A
 	// failed constructor must not wrap a nil pointer in the Capture interface.
-	capture, err := openNativeCapture(context.Background(), nil, Stream{native: &pJoinChannelRes{}}, "", StreamRecovery{})
+	capture, err := openNativeCapture(context.Background(), nil, Stream{native: &pJoinChannelRes{}}, "", StreamRecovery{}, 0)
 	if err == nil || capture != nil {
 		t.Fatalf("failed native startup returned capture=%T, error=%v", capture, err)
 	}
@@ -72,7 +72,7 @@ func TestWebFallbackContinuesAfterRepeatedNativeStartupFailures(t *testing.T) {
 		fallbackPolicy{time.Millisecond, 5 * time.Millisecond, 50 * time.Millisecond},
 		func(ctx context.Context, fresh Stream) (Capture, error) {
 			attempts.Add(1)
-			return openNativeCapture(ctx, server.Client(), fresh, "", StreamRecovery{})
+			return openNativeCapture(ctx, server.Client(), fresh, "", StreamRecovery{}, 0)
 		})
 	if err != nil {
 		t.Fatal(err)

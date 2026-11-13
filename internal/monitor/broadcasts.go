@@ -23,6 +23,15 @@ type guestProfileClient interface {
 func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (recording.Options, error) {
 	options := recording.Options{}
 	if source.RoomKind != bigo.RoomAudioMultiGuest && source.RoomKind != bigo.RoomHybridMultiGuest {
+		if cfg.SplitMinutes > 0 {
+			options.Broadcast = recording.NewSegmentedBroadcast(streamer, source, cfg, time.Now())
+			for _, saved := range e.store.Data().Broadcasts {
+				if saved.ID == options.Broadcast.ID {
+					options.Broadcast = saved
+					break
+				}
+			}
+		}
 		return options, nil
 	}
 	candidate := recording.NewBroadcast(streamer, source, cfg, time.Now())
@@ -76,13 +85,16 @@ func (e *Engine) broadcastNotified(id string) bool {
 	return false
 }
 
-// Guest files start and stop independently. Keep the displayed room clock on
-// the persisted broadcast start, including across recorder restarts.
+// Keep the stream clock on the broadcast start or the capture's first file.
 func recordingClockStart(h activeRecording) time.Time {
 	if source, ok := h.(interface{ Broadcast() state.Broadcast }); ok {
 		if broadcast := source.Broadcast(); broadcast.ID != "" && !broadcast.StartedAt.IsZero() {
 			return broadcast.StartedAt
 		}
+	}
+	if files, ok := h.(interface{ FirstFile() (string, time.Time) }); ok {
+		_, started := files.FirstFile()
+		return started
 	}
 	return h.Started()
 }
@@ -93,7 +105,7 @@ func (e *Engine) notifyRecording(it *item, path string) {
 	}
 	it.recordNotified = true
 	message := "Recording started: " + path
-	if it.broadcastID != "" {
+	if it.broadcastID != "" && !it.segmented {
 		e.persist(func(data *state.Data) {
 			for i := range data.Broadcasts {
 				if data.Broadcasts[i].ID == it.broadcastID {
@@ -169,7 +181,7 @@ func (e *Engine) finishBroadcast(id string) {
 
 func (e *Engine) finishRoom(streamer, room string) {
 	for _, saved := range e.store.Data().Broadcasts {
-		if saved.StreamerID == streamer && saved.RoomID == room && saved.EndedAt.IsZero() {
+		if !saved.Segmented && saved.StreamerID == streamer && saved.RoomID == room && saved.EndedAt.IsZero() {
 			e.finishBroadcast(saved.ID)
 		}
 	}
@@ -183,7 +195,7 @@ func (e *Engine) verifyPreviousBroadcasts(ctx context.Context, id string, curren
 		return
 	}
 	for _, saved := range e.store.Data().Broadcasts {
-		if saved.StreamerID != id || !saved.EndedAt.IsZero() || (current.Alive == 1 && current.RoomID == saved.RoomID) {
+		if saved.Segmented || saved.StreamerID != id || !saved.EndedAt.IsZero() || (current.Alive == 1 && current.RoomID == saved.RoomID) {
 			continue
 		}
 		e.mu.Lock()

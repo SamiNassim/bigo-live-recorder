@@ -39,7 +39,7 @@ func TestNativeRoomClassificationRequiresBothExplicitFlags(t *testing.T) {
 
 func TestMultiGuestRoomNeverUsesSingleStreamCaptureEvenWithStalePlayback(t *testing.T) {
 	source := Stream{Alive: 1, RoomKind: RoomAudioMultiGuest, HLS: "https://invalid.example/stale.m3u8", native: &pJoinChannelRes{}}
-	capture, err := OpenCapture(context.Background(), nil, source, "", StreamRecovery{})
+	capture, err := OpenCapture(context.Background(), nil, source, "", StreamRecovery{}, 0)
 	if capture != nil || !errors.Is(err, errMultiGuestCapture) {
 		t.Fatal("attempted a mixed recording for a multi-guest room", err)
 	}

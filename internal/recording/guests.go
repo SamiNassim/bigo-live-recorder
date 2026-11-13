@@ -98,7 +98,8 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 					}
 					return
 				}
-				h.appendGuestChange(FileChange{Path: child.File(), StartedAt: child.Started(), BroadcastID: options.Broadcast.ID, Guest: profile})
+				firstPath, firstStarted := child.FirstFile()
+				h.appendGuestChange(FileChange{Path: firstPath, StartedAt: firstStarted, BroadcastID: options.Broadcast.ID, Guest: profile})
 				ticker := time.NewTicker(100 * time.Millisecond)
 				defer ticker.Stop()
 				for {

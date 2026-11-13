@@ -178,6 +178,40 @@ func TestRecordingGroupsExpandWithDisclosureAndKeepStateAcrossTabs(t *testing.T)
 	}
 }
 
+func TestSplitBroadcastShowsWholeDurationAndExpandableClips(t *testing.T) {
+	a := accountFixture(t)
+	a.page = "recordings"
+	start := time.Now().Add(-time.Hour)
+	split := start.Add(30 * time.Minute)
+	dir := t.TempDir()
+	b := state.Broadcast{ID: "split:fixture", StreamerID: "host.example", Directory: dir, StartedAt: start, EndedAt: start.Add(45 * time.Minute), Segmented: true}
+	a.data.Broadcasts = []state.Broadcast{b}
+	a.data.Recordings = []state.Recording{
+		{ID: "first", Name: "Demo Host", BroadcastID: b.ID, Path: filepath.Join(dir, "first.mkv"), StartedAt: start, EndedAt: split},
+		{ID: "second", Name: "Demo Host", BroadcastID: b.ID, Path: filepath.Join(dir, "second.mkv"), StartedAt: split, EndedAt: b.EndedAt},
+	}
+	tt := ui.NewTester(a.view, 1400, 900)
+	if a.recordList.Rows() != 1 || !tt.HasText("45m 00s") || !tt.HasText("2 clips") || tt.HasText("Clip 1") {
+		t.Fatal("split broadcast did not show a single row with its total duration", tt.Texts())
+	}
+	name, _ := tt.Find("Demo Host")
+	kind, _ := tt.Find("Split recording")
+	tt.ClickAt(name.X-8, (name.Y+kind.Y+kind.H)/2)
+	if a.recordList.Rows() != 3 || !tt.HasText("Clip 1") || !tt.HasText("Clip 2") ||
+		!tt.HasText("30m 00s") || !tt.HasText("15m 00s") {
+		t.Fatal("expanded group did not show individual clips and durations", tt.Texts())
+	}
+	col, _ := tt.Find("Started")
+	clip, _ := tt.Find("Clip 2")
+	tt.RightClickAt(col.X+8, clip.Y+clip.H/2)
+	if slices.Contains(tt.Menu(), "Assemble room replay") {
+		t.Fatal("a timed clip showed multi-guest replay actions", tt.Menu())
+	}
+	if err := tt.ChooseMenuItem("Copy file path"); err != nil || tt.Clipboard() != filepath.Join(dir, "second.mkv") {
+		t.Fatal("clip action did not target the selected file", err, tt.Clipboard())
+	}
+}
+
 func TestRecordingGroupMenusTargetFoldersAndIndividualFiles(t *testing.T) {
 	a, b := groupedRecordingFixture(t)
 	tt := ui.NewTester(a.view, 1400, 900)

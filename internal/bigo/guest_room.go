@@ -31,33 +31,34 @@ type guestFrame struct {
 }
 
 type guestRoom struct {
-	parent    context.Context
-	ctx       context.Context
-	cancel    context.CancelFunc
-	recovery  StreamRecovery
-	mu        sync.Mutex
-	refreshMu sync.Mutex
-	source    Stream
-	err       error
-	finished  sync.Once
-	workers   sync.WaitGroup
-	frames    chan guestFrame
-	guests    chan Participant
-	done      chan struct{}
-	lastMedia atomic.Int64
-	members   map[uint32]*guestMember // Owned by dispatch until done closes.
-	epoch     time.Time
+	parent        context.Context
+	ctx           context.Context
+	cancel        context.CancelFunc
+	recovery      StreamRecovery
+	mu            sync.Mutex
+	refreshMu     sync.Mutex
+	source        Stream
+	err           error
+	finished      sync.Once
+	workers       sync.WaitGroup
+	frames        chan guestFrame
+	guests        chan Participant
+	done          chan struct{}
+	lastMedia     atomic.Int64
+	members       map[uint32]*guestMember // Owned by dispatch until done closes.
+	epoch         time.Time
+	splitInterval time.Duration
 }
 
 // OpenGuestRoom subscribes to original participant feeds using the room ticket
 // already obtained through the shared native listener.
-func OpenGuestRoom(parent context.Context, source Stream, recovery StreamRecovery) (GuestRoom, error) {
+func OpenGuestRoom(parent context.Context, source Stream, recovery StreamRecovery, splitInterval time.Duration) (GuestRoom, error) {
 	if source.native == nil || (source.RoomKind != RoomHybridMultiGuest && source.RoomKind != RoomAudioMultiGuest) {
 		return nil, ErrOriginUnavailable
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &guestRoom{parent: parent, ctx: ctx, cancel: cancel, recovery: recovery, source: source,
-		frames: make(chan guestFrame, 256), guests: make(chan Participant, 64), done: make(chan struct{}), members: make(map[uint32]*guestMember), epoch: time.Now()}
+		frames: make(chan guestFrame, 256), guests: make(chan Participant, 64), done: make(chan struct{}), members: make(map[uint32]*guestMember), epoch: time.Now(), splitInterval: splitInterval}
 	r.lastMedia.Store(time.Now().UnixNano())
 	r.workers.Add(2)
 	if source.RoomKind == RoomHybridMultiGuest && len(source.native.video) > 0 {

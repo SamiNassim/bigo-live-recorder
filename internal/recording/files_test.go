@@ -295,6 +295,104 @@ func TestStopWhileWaitingForNextFormatFinalizesPromptly(t *testing.T) {
 	}
 }
 
+func TestWebTimedSplitPublishesCompletedClipsBeforeEOF(t *testing.T) {
+	ffmpeg, err := FindFFmpeg("")
+	if err != nil {
+		t.Skip("FFmpeg is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	generate := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x96:r=5:d=130",
+		"-f", "lavfi", "-i", "sine=duration=130", "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-g", "5",
+		"-c:a", "aac", "-f", "mpegts", "pipe:1")
+	configureCommand(generate)
+	media, err := generate.Output()
+	if err != nil {
+		t.Fatal("generate transport", err)
+	}
+	input, producer := io.Pipe()
+	defer producer.Close()
+	capture := &fixtureCapture{parts: []*bigo.CapturePart{{ReadCloser: input}}}
+	cfg := state.Defaults()
+	cfg.SplitMinutes = 1
+	cfg.RecordingPath = filepath.Join(t.TempDir(), "clips 100%")
+	streamer := state.Streamer{ID: "fixture"}
+	broadcast := NewSegmentedBroadcast(streamer, bigo.Stream{RoomID: "fixture-room"}, cfg, time.Now())
+	h, err := startCapture(ctx, cancel, ffmpeg, streamer, cfg, participantCapture{Capture: capture, broadcast: broadcast}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Stop()
+	sent := make(chan error, 1)
+	go func() { _, err := producer.Write(media); sent <- err }()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var clips []string
+	for len(clips) < 2 {
+		for _, change := range h.DrainFileChanges() {
+			if change.BroadcastID != broadcast.ID || filepath.Dir(change.Path) != broadcast.Directory {
+				t.Fatal("clip is outside the broadcast group or folder", change)
+			}
+			if change.Result == nil {
+				continue
+			}
+			if change.Result.Err != nil || change.Result.Bytes == 0 {
+				t.Fatal("completed clip was not saved", change.Result)
+			}
+			clips = append(clips, change.Path)
+		}
+		select {
+		case <-h.Done():
+			t.Fatal("input closed during a timed cut", h.Result())
+		case <-ctx.Done():
+			t.Fatal("FFmpeg never published completed clips before EOF")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	producer.Close()
+	result := h.Result()
+	if result.Err != nil || result.Path != h.File() || result.Bytes == 0 {
+		t.Fatal("last segment was not finalized", result)
+	}
+	clips = append(clips, result.Path)
+	var video []string
+	source := filepath.Join(t.TempDir(), "fixture.ts")
+	if err := os.WriteFile(source, media, 0600); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[bool]int64{}
+	for _, path := range clips {
+		frames, _ := decodedHashes(t, ffmpeg, path)
+		video = append(video, frames...)
+		tracks, err := inspectReplayMedia(context.Background(), ffmpeg, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, track := range tracks {
+			counts[track.Video] += track.Packets
+		}
+	}
+	want, _ := decodedHashes(t, ffmpeg, source)
+	if strings.Join(video, ",") != strings.Join(want, ",") {
+		t.Fatalf("timed web recording changed video: got %d frames, want %d", len(video), len(want))
+	}
+	tracks, err := inspectReplayMedia(context.Background(), ffmpeg, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, track := range tracks {
+		if got := counts[track.Video]; got != track.Packets {
+			t.Fatalf("timed split lost packets (video %v): got %d, want %d", track.Video, got, track.Packets)
+		}
+	}
+}
+
 func TestMKVResolutionChangesKeepAllFrames(t *testing.T) {
 	ffmpeg, err := FindFFmpeg("")
 	if err != nil {

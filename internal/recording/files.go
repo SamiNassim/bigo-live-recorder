@@ -45,6 +45,15 @@ func (h *Handle) fileStarted(file *fileWriter) {
 	h.changes = append(h.changes, file.change(nil))
 }
 
+func (h *Handle) webFileAdvanced(file *fileWriter, result Result, next string, started time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.changes = append(h.changes, file.change(&result))
+	file.path, file.started = next, started
+	h.currentPath, h.currentStarted = next, started
+	h.changes = append(h.changes, file.change(nil))
+}
+
 func (h *Handle) fileFinished(file *fileWriter, result Result) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -68,6 +77,8 @@ type fileWriter struct {
 	timing     *timeline.Frames
 	journal    *timeline.Journal
 	timingOnce sync.Once
+	segments   *webSegments
+	saved      *Result
 }
 
 type captureOptions struct {
@@ -105,7 +116,19 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fault.Action("could not create the recording folder; check disk space and folder permissions", err)
 	}
-	cmd := exec.Command(ffmpeg, recordingArgs(part, path)...)
+	var segments *webSegments
+	var args []string
+	if !part.Native && cfg.SplitMinutes > 0 {
+		segments = &webSegments{base: strings.TrimSuffix(path, filepath.Ext(path))}
+		path = segments.path(0)
+		args = segments.args(part, cfg.SplitMinutes)
+	} else {
+		args = recordingArgs(part, path)
+	}
+	cmd := exec.Command(ffmpeg, args...)
+	if segments != nil {
+		cmd.Stdout = segments
+	}
 	configureCommand(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -117,7 +140,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 		stdin.Close()
 		return nil, fault.Action("FFmpeg could not start; check its installation in Settings", err)
 	}
-	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr}
+	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr, segments: segments}
 	if len(settings) > 0 && settings[0].timing != nil && part.Timing != nil && !part.Timing.Epoch.IsZero() {
 		options := settings[0]
 		f.journal = options.timing
@@ -165,6 +188,13 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) (Result, bool
 }
 
 func (f *fileWriter) finish(copyErr error, canceled bool) Result {
+	if f.saved != nil {
+		result := *f.saved
+		if !canceled && result.Err == nil {
+			result.Err = copyErr
+		}
+		return result
+	}
 	f.stdin.Close()
 	f.part.Close()
 	var waitErr error
@@ -195,21 +225,10 @@ func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *file
 	// if a muxer stalls repeatedly; reception continues into the capture buffer.
 	finishing := make(chan struct{}, 4)
 	for {
-		var copyErr error
-		select {
-		case <-ctx.Done():
-			current.part.Close()
-			current.stdin.Close()
-			capture.Close()
-			copyErr = <-current.copied
-			h.result = current.finish(copyErr, true)
-			return
-		case waitErr := <-current.waited:
-			current.exitErr = &waitErr
-			current.part.Close()
-			current.stdin.Close()
-			copyErr = <-current.copied
-		case copyErr = <-current.copied:
+		copyErr := current.waitForInput(ctx, capture, h)
+		if current.segments != nil {
+			current.finishWeb(h, copyErr, ctx.Err() != nil)
+			copyErr = current.saved.Err
 		}
 		if copyErr != nil || ctx.Err() != nil || (current.exitErr != nil && *current.exitErr != nil) {
 			h.result = current.finish(copyErr, ctx.Err() != nil)
@@ -248,5 +267,32 @@ func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *file
 			report("INFO", message)
 		}
 		finalizers.Go(func() { defer func() { <-finishing }(); h.fileFinished(previous, previous.finish(nil, false)) })
+	}
+}
+
+func (f *fileWriter) waitForInput(ctx context.Context, capture bigo.Capture, h *Handle) error {
+	var ticks <-chan time.Time
+	if f.segments != nil {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			f.part.Close()
+			f.stdin.Close()
+			capture.Close()
+			return <-f.copied
+		case err := <-f.waited:
+			f.exitErr = &err
+			f.part.Close()
+			f.stdin.Close()
+			return <-f.copied
+		case err := <-f.copied:
+			return err
+		case <-ticks:
+			f.publishWebSegments(h)
+		}
 	}
 }

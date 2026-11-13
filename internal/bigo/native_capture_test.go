@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 )
 
 func nativeCaptureFixture(t *testing.T, frames []nativeMediaFrame) *nativeCapture {
@@ -136,6 +137,42 @@ func TestNativeCaptureCompatibleKeyframesKeepOnePart(t *testing.T) {
 	}
 	if _, err := c.Next(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatal("same-codec keyframes created another file", err)
+	}
+}
+
+func TestNativeTimedSplitKeepsLateAudioAndSuppliesHeaders(t *testing.T) {
+	first := nativeCaptureVideo(1000, true, 2, 1)
+	boundary := nativeCaptureVideo(1120, true, 2, 4)
+	boundary.data = []byte{0, 0, 0, 1, 0x65, 4}
+	wantKeyframe := []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 1, 0, 0, 0, 1, 0x65, 4}
+	c := nativeCaptureFixture(t, []nativeMediaFrame{
+		first, nativeCaptureAudio(1010),
+		nativeCaptureVideo(1040, true, 2, 2), nativeCaptureAudio(1050),
+		nativeCaptureVideo(1080, false, 2, 3), boundary,
+		nativeCaptureAudio(1090), nativeCaptureAudio(1120),
+		nativeCaptureVideo(1160, false, 2, 5), nativeCaptureAudio(1170),
+	})
+	c.splitInterval = 70 * time.Millisecond
+	for i, want := range []int{3, 2} {
+		part, err := c.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := nativeCapturePayloads(t, b)
+		if len(got[256]) != want || len(got[257]) != want {
+			t.Fatalf("part %d did not keep every frame: video %d, audio %d", i, len(got[256]), len(got[257]))
+		}
+		if i == 1 && (part.Reason == "" || !bytes.Equal(got[256][0], wantKeyframe)) {
+			t.Fatal("timed split lost the new keyframe or its headers")
+		}
+	}
+	if _, err := c.Next(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
 	}
 }
 

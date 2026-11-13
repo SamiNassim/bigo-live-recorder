@@ -33,7 +33,7 @@ func (a *application) recordingMenu(m *ui.Menu, r state.Recording, services ui.S
 	if r.BroadcastID != "" {
 		data := a.store.Data()
 		for _, broadcast := range data.Broadcasts {
-			if broadcast.ID == r.BroadcastID {
+			if broadcast.ID == r.BroadcastID && !broadcast.Segmented {
 				m.Separator()
 				a.roomReplayMenu(m, broadcast, r.Path, data.Recordings)
 				break
@@ -117,6 +117,8 @@ func (a *application) recordingGroupMenu(m *ui.Menu, key recordingKey, group rec
 	if m.Item("Copy folder path").Disabled(group.broadcast.Directory == "").Chosen() {
 		services.WriteClipboard(group.broadcast.Directory)
 	}
-	m.Separator()
-	a.roomReplayMenu(m, group.broadcast, "", a.data.Recordings)
+	if !group.broadcast.Segmented {
+		m.Separator()
+		a.roomReplayMenu(m, group.broadcast, "", a.data.Recordings)
+	}
 }

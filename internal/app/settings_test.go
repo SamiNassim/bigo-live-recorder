@@ -20,6 +20,7 @@ func TestUnsavedSettingsTracksEditsAndReverts(t *testing.T) {
 	}{
 		{"cookie", func() { a.cfg.Cookie = "synthetic-cookie" }},
 		{"recording folder", func() { a.cfg.RecordingPath += "-new" }},
+		{"recording split interval", func() { a.splitChoice = "30 minutes" }},
 		{"notifications", func() { a.cfg.Notifications = !saved.Notifications }},
 		{"output options", func() { a.cfg.FFmpegArgs += " -an" }},
 		{"output format", func() { a.cfg.OutputExtension = "ts" }},
@@ -68,6 +69,47 @@ func TestUnsavedSettingsIgnoresAutomaticPersistence(t *testing.T) {
 	a.cfg.Notifications = !cfg.Notifications
 	if !a.unsavedSettings() {
 		t.Fatal("automatic persistence hid another unsaved setting")
+	}
+}
+
+func TestRecordingSplitSettingsPresetsAndCustom(t *testing.T) {
+	a := accountFixture(t)
+	a.page = "settings"
+	tt := ui.NewTester(a.view, 1400, 1100)
+	for _, choice := range []struct {
+		label   string
+		minutes int
+	}{{"30 minutes", 30}, {"1 hour", 60}, {"Custom", 30}, {"Off", 0}} {
+		control, ok := tt.Find("Split recordings every")
+		if !ok {
+			t.Fatal("split setting is missing")
+		}
+		viewport, _ := tt.Find("Settings sections")
+		a.settingsScroll.Y += control.Y - viewport.Y - 80
+		tt.Frame()
+		if err := tt.Click(a.splitChoice); err != nil {
+			t.Fatal(err)
+		}
+		if err := tt.Click(choice.label); err != nil {
+			t.Fatal(err)
+		}
+		_, customVisible := tt.Find("Split interval (minutes)")
+		if got := a.settingsConfig().SplitMinutes; got != choice.minutes || customVisible != (choice.label == "Custom") {
+			t.Fatal("wrong split preference", choice, got, customVisible)
+		}
+		if choice.label == "Custom" {
+			a.splitMinutes = 45
+			cfg := a.settingsConfig()
+			if err := a.store.SaveConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			a.cfg = a.store.Config()
+			a.loadNumbers()
+			if a.unsavedSettings() || a.splitChoice != "Custom" || a.splitMinutes != 45 {
+				t.Fatal("custom interval did not survive saving")
+			}
+			tt.Frame()
+		}
 	}
 }
 

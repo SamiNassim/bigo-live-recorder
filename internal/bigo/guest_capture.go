@@ -221,12 +221,13 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			if !ready {
 				continue
 			}
-			_, err := c.videoBoundary(f, &mux, config)
+			_, err := c.videoBoundary(f, &mux, config, "")
 			c.reason = "The guest enabled their camera; continuing with original video and audio in a new file"
 			writer.CloseWithError(err)
 			return
 		}
-		if audioConfig(f) != config {
+		changed := audioConfig(f) != config
+		if changed || mux.splitDue(f, c.splitInterval) {
 			tail := newNativeFrameQueue(1 << 20)
 			if err := tail.push(f); err != nil {
 				tail.close()
@@ -235,7 +236,10 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			}
 			tail.finish(nil)
 			c.deferred = append([]*nativeFrameQueue{tail}, c.deferred...)
-			c.reason = "Guest audio encoding changed; continuing in a new audio recording"
+			c.reason = "Recording split interval reached; continuing in a new file"
+			if changed {
+				c.reason = "Guest audio encoding changed; continuing in a new audio recording"
+			}
 			writer.Close()
 			return
 		}

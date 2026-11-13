@@ -28,7 +28,7 @@ func (a *application) visibleReplayProgressChanged(previous map[string]recording
 func (a *application) recordings(c *ui.Context) {
 	t := c.Theme()
 	hasCompleted := slices.ContainsFunc(a.data.Recordings, func(r state.Recording) bool { return !r.EndedAt.IsZero() })
-	header(c, "Recordings", "Expand a multi-guest broadcast to see its replay and individual guest files.", func() {
+	header(c, "Recordings", "Expand a recording group to see its clips or guest files.", func() {
 		if ui.Button(c, "Clear history…").Disabled(a.busy || a.preview || !hasCompleted).Clicked() {
 			a.clearHistoryOpen = true
 		}
@@ -41,9 +41,10 @@ func (a *application) recordings(c *ui.Context) {
 	a.recordList.List.Label = func(row int) string {
 		key := a.recordList.Item(row)
 		if key.Group {
-			return "Multi-guest broadcast · " + tree.groups[key.ID].name()
+			group := tree.groups[key.ID]
+			return group.kind() + " · " + group.name()
 		}
-		name, _ := recordingTitle(tree.file(key))
+		name, _ := tree.recordingTitle(key)
 		return name
 	}
 	services := c.Services()
@@ -64,7 +65,7 @@ func (a *application) recordings(c *ui.Context) {
 			r := tree.file(key)
 			switch col {
 			case 0:
-				name, detail := recordingTitle(r)
+				name, detail := tree.recordingTitle(key)
 				if r.ID == "replay:"+r.BroadcastID && tree.groups[r.BroadcastID].replayIsPartial() {
 					detail = "Saved replay · earlier capture"
 				}
@@ -107,9 +108,9 @@ func (a *application) recordings(c *ui.Context) {
 		}).Grow(1).MinHeight(0).FillWidth()
 		label := fmt.Sprintf("%d files in history", len(a.data.Recordings))
 		if len(tree.groups) > 0 {
-			kind := "multi-guest broadcasts"
+			kind := "recording groups"
 			if len(tree.groups) == 1 {
-				kind = "multi-guest broadcast"
+				kind = "recording group"
 			}
 			label += fmt.Sprintf(" · %d %s", len(tree.groups), kind)
 		}
@@ -123,7 +124,7 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 	case 0:
 		label := ui.Column(c).Grow(1).MinWidth(0).Gap(3).Padding(7, 0).Children(func() {
 			ui.Text(c, g.name()).FontWeight(600).SingleLine().Tooltip(g.name() + "\nBIGO ID: " + g.broadcast.StreamerID)
-			ui.Text(c, "Multi-guest").FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, g.kind()).FontSize(11).TextColor(t.TextMuted)
 		})
 		if label.RowDoubleClicked() {
 			a.toggleRecordingGroup(key)
@@ -142,14 +143,21 @@ func (a *application) recordingGroupCell(c *ui.Context, key recordingKey, g reco
 		}
 	case 3:
 		hint := "Total size of original guest files; the replay is separate."
-		if g.files == 0 {
+		if g.broadcast.Segmented {
+			hint = "Total size of the clips in history."
+		} else if g.files == 0 {
 			hint = "Replay file size."
 		}
 		ui.Text(c, bytesLabel(g.bytes)).FontSize(11).Tooltip(hint)
 	case 4:
 		ui.Column(c).Grow(1).MinWidth(0).Gap(3).Padding(7, 0).Children(func() {
 			detail := fmt.Sprintf("%d guest files", g.files)
-			if g.guests > 0 {
+			if g.broadcast.Segmented {
+				detail = fmt.Sprintf("%d clips", g.files)
+				if g.files == 1 {
+					detail = "1 clip"
+				}
+			} else if g.guests > 0 {
 				detail += fmt.Sprintf(" · %d guests", g.guests)
 			}
 			if g.files == 0 {
@@ -217,7 +225,11 @@ func (a *application) recordingDuration(c *ui.Context, key recordingKey, started
 	ui.Text(c, duration(d)).FontSize(11)
 }
 
-func recordingTitle(r state.Recording) (string, string) {
+func (tree *recordingTree) recordingTitle(key recordingKey) (string, string) {
+	r := tree.file(key)
+	if clip := tree.clips[key.ID]; clip > 0 {
+		return fmt.Sprintf("Clip %d", clip), ""
+	}
 	if r.BroadcastID == "" {
 		return r.Name, ""
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"bigo-live-recorder/internal/fault"
 )
@@ -34,12 +35,12 @@ func (p *CapturePart) NativeTimestamps() bool { return p.Native }
 
 var errMultiGuestCapture = errors.New("multi-guest rooms require separate participant captures")
 
-func OpenCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+func OpenCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery, splitInterval time.Duration) (Capture, error) {
 	if source.RoomKind == RoomAudioMultiGuest || source.RoomKind == RoomHybridMultiGuest {
 		return nil, errMultiGuestCapture
 	}
 	if source.native != nil {
-		capture, err := openNativeCapture(ctx, client, source, referer, recovery)
+		capture, err := openNativeCapture(ctx, client, source, referer, recovery, splitInterval)
 		if err == nil {
 			return capture, nil
 		}
@@ -51,23 +52,24 @@ func OpenCapture(ctx context.Context, client *http.Client, source Stream, refere
 		}
 		recovery.reportError("WARN", "Native media could not start: "+fault.Reason(err)+". Trying the web stream instead.", err)
 	}
-	return openWebCapture(ctx, client, source, referer, recovery)
+	return openWebCapture(ctx, client, source, referer, recovery, splitInterval)
 }
 
-func openNativeCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+func openNativeCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery, splitInterval time.Duration) (Capture, error) {
 	capture, err := newNativeCaptureWithFallback(ctx, source, recovery, func(ctx context.Context, fresh Stream) (Capture, error) {
-		return openWebCapture(ctx, client, fresh, referer, recovery)
+		return openWebCapture(ctx, client, fresh, referer, recovery, splitInterval)
 	})
 	if err != nil {
 		return nil, err
 	}
+	capture.splitInterval = splitInterval
 	return capture, nil
 }
 
-func openWebCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (Capture, error) {
+func openWebCapture(ctx context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery, splitInterval time.Duration) (Capture, error) {
 	if recovery.Origin != nil {
 		return newFallbackCapture(ctx, client, source, referer, recovery, defaultFallbackPolicy(), func(ctx context.Context, fresh Stream) (Capture, error) {
-			return openNativeCapture(ctx, client, fresh, referer, recovery)
+			return openNativeCapture(ctx, client, fresh, referer, recovery, splitInterval)
 		})
 	}
 	stream, err := openHLSStream(ctx, client, source, referer, recovery, defaultHLSPolicy(), true)

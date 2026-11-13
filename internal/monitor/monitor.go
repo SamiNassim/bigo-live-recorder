@@ -75,6 +75,7 @@ type item struct {
 	audioRoom         string
 	recordNotified    bool
 	broadcastID       string
+	segmented         bool
 }
 
 type Engine struct {
@@ -895,11 +896,12 @@ func (e *Engine) check(id string) {
 	}
 	it.handle = h
 	it.recordNotified = false
-	it.broadcastID = ""
+	var broadcast state.Broadcast
 	if source, ok := h.(interface{ Broadcast() state.Broadcast }); ok {
-		it.broadcastID = source.Broadcast().ID
-		it.recordNotified = e.broadcastNotified(it.broadcastID)
+		broadcast = source.Broadcast()
+		it.recordNotified = !broadcast.Segmented && e.broadcastNotified(broadcast.ID)
 	}
+	it.broadcastID, it.segmented = broadcast.ID, broadcast.Segmented
 	if source, ok := h.(interface{ RoomKind() bigo.RoomKind }); ok {
 		it.row.RoomKind = source.RoomKind()
 	}
@@ -911,7 +913,11 @@ func (e *Engine) check(id string) {
 	it.row.StartedAt = recordingClockStart(h)
 	it.row.Path = h.File()
 	it.row.NextCheck = time.Time{}
-	if h.File() == "" {
+	firstPath, firstStarted := it.row.Path, h.Started()
+	if files, ok := h.(interface{ FirstFile() (string, time.Time) }); ok {
+		firstPath, firstStarted = files.FirstFile()
+	}
+	if firstPath == "" {
 		it.row.Status = "Waiting for guest media"
 		current = e.store.Data()
 		at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
@@ -921,17 +927,24 @@ func (e *Engine) check(id string) {
 		}
 		return
 	}
-	it.row.Streamer.LastRecordedAt = h.Started()
+	it.row.Streamer.LastRecordedAt = firstStarted
 	e.persist(func(d *state.Data) {
+		if broadcast.Segmented {
+			if i := slices.IndexFunc(d.Broadcasts, func(b state.Broadcast) bool { return b.ID == broadcast.ID }); i >= 0 {
+				d.Broadcasts[i].EndedAt = time.Time{}
+			} else {
+				d.Broadcasts = append(d.Broadcasts, broadcast)
+			}
+		}
 		for i := range d.Streamers {
 			if d.Streamers[i].ID == id {
-				d.Streamers[i].LastRecordedAt = h.Started()
+				d.Streamers[i].LastRecordedAt = firstStarted
 				if cfg.AutoPromote {
 					d.Streamers[i].LowPriority = false
 				}
 			}
 		}
-		d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", h.Started().UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: h.File(), StartedAt: h.Started(), BroadcastID: it.broadcastID})
+		d.Recordings = append(d.Recordings, state.Recording{ID: fmt.Sprintf("%d-%s", firstStarted.UnixNano(), id), StreamerID: id, Name: it.row.Streamer.DisplayName(), Path: firstPath, StartedAt: firstStarted, BroadcastID: it.broadcastID})
 	})
 	current = e.store.Data()
 	at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
@@ -940,7 +953,7 @@ func (e *Engine) check(id string) {
 		it.row.Status = "Finalizing"
 		return
 	}
-	e.notifyRecording(it, h.File())
+	e.notifyRecording(it, firstPath)
 }
 
 func (e *Engine) completed(it *item) {
@@ -949,6 +962,14 @@ func (e *Engine) completed(it *item) {
 	alreadyFinalized := slices.ContainsFunc(e.store.Data().Recordings, func(saved state.Recording) bool { return saved.Path == r.Path && !saved.EndedAt.IsZero() })
 	e.persist(func(d *state.Data) {
 		finishBroadcastFile(d, r.Path, r)
+		if it.segmented {
+			for i := range d.Broadcasts {
+				if d.Broadcasts[i].ID == it.broadcastID {
+					d.Broadcasts[i].EndedAt = r.EndedAt
+					break
+				}
+			}
+		}
 	})
 	if r.Err != nil {
 		it.row.Error = fault.Reason(r.Err)
@@ -957,17 +978,17 @@ func (e *Engine) completed(it *item) {
 			message += " Monitoring will continue."
 		}
 		e.log.WriteError(level, it.row.Streamer.ID, message, r.Err)
-	} else if it.broadcastID == "" && !alreadyFinalized && r.Path != "" {
+	} else if (it.broadcastID == "" || it.segmented) && !alreadyFinalized && r.Path != "" {
 		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
 	}
-	if r.RoomEnded && it.broadcastID != "" {
+	if r.RoomEnded && it.broadcastID != "" && !it.segmented {
 		e.finishBroadcast(it.broadcastID)
-	} else if r.RoomModeChanged && it.broadcastID != "" {
+	} else if r.RoomModeChanged && it.broadcastID != "" && !it.segmented {
 		e.log.Write("INFO", it.row.Streamer.ID, "BIGO changed the room mode. Guest files are finalized; creating a replay of the captured media while monitoring continues.")
 		if err := e.QueueReplay(it.broadcastID); err != nil && e.ctx.Err() == nil {
 			e.log.WriteError("WARN", it.row.Streamer.ID, "Could not queue the room replay; original recordings are preserved.", err)
 		}
-	} else if it.broadcastID != "" {
+	} else if it.broadcastID != "" && !it.segmented {
 		for _, b := range e.store.Data().Broadcasts {
 			if b.ID == it.broadcastID && b.ReplayPending {
 				e.QueueReplay(b.ID)
@@ -984,6 +1005,7 @@ func (e *Engine) completed(it *item) {
 	}
 	it.handle = nil
 	it.broadcastID = ""
+	it.segmented = false
 	it.row.StartedAt = time.Time{}
 	it.row.Path = ""
 	it.row.Status = "Waiting"
@@ -1040,7 +1062,7 @@ func (e *Engine) fileChanges(it *item) {
 				level, message := recordingFailure(*r, true)
 				e.log.WriteError(level, id, message, r.Err)
 			} else {
-				if it.broadcastID == "" {
+				if it.broadcastID == "" || it.segmented {
 					e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
 				}
 				if it.config.PostProcess && r.Bytes > 0 && e.ctx.Err() == nil {
@@ -1049,14 +1071,14 @@ func (e *Engine) fileChanges(it *item) {
 			}
 		} else {
 			first := !it.recordNotified
-			it.row.Path, it.row.StartedAt = change.Path, change.StartedAt
+			it.row.Path = change.Path
 			it.row.Streamer.LastRecordedAt = change.StartedAt
 			if it.row.Status == "Waiting for guest media" {
 				it.row.Status = "Recording"
 			}
 			if first {
 				e.notifyRecording(it, change.Path)
-			} else if it.broadcastID == "" {
+			} else if it.broadcastID == "" || it.segmented {
 				e.log.Write("INFO", id, "Recording continued: "+change.Path)
 			}
 		}
@@ -1084,6 +1106,7 @@ func (e *Engine) recoverHistory() {
 		return
 	}
 	e.persist(func(d *state.Data) {
+		recovered := make(map[string]time.Time)
 		for i := range d.Recordings {
 			r := &d.Recordings[i]
 			if !r.EndedAt.IsZero() {
@@ -1093,7 +1116,14 @@ func (e *Engine) recoverHistory() {
 			r.Error = "Application stopped before recording finalization was confirmed; existing file preserved"
 			if info, err := os.Stat(r.Path); err == nil {
 				r.Bytes = info.Size()
-				r.EndedAt = info.ModTime()
+				r.EndedAt = maxTime(r.StartedAt, info.ModTime())
+			}
+			recovered[r.BroadcastID] = maxTime(recovered[r.BroadcastID], r.EndedAt)
+		}
+		for i := range d.Broadcasts {
+			b := &d.Broadcasts[i]
+			if ended := recovered[b.ID]; b.Segmented && !ended.IsZero() {
+				b.EndedAt = maxTime(b.EndedAt, ended)
 			}
 		}
 	})

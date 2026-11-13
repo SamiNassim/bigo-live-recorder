@@ -51,6 +51,10 @@ func (h *Handle) File() string            { h.mu.Lock(); defer h.mu.Unlock(); re
 func (h *Handle) Started() time.Time      { h.mu.Lock(); defer h.mu.Unlock(); return h.currentStarted }
 func (h *Handle) RoomKind() bigo.RoomKind { return h.roomKind }
 
+// FirstFile is stable even when a buffered input rolls over before the
+// monitoring loop has saved the initial history entry.
+func (h *Handle) FirstFile() (string, time.Time) { return h.Path, h.StartedAt }
+
 func FindFFmpeg(configured string) (string, error) {
 	return ffmpeg.Find(configured)
 }
@@ -67,11 +71,12 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	if len(settings) > 0 {
 		options = settings[0]
 	}
+	splitInterval := time.Duration(cfg.SplitMinutes) * time.Minute
 	if source.RoomKind == bigo.RoomHybridMultiGuest || source.RoomKind == bigo.RoomAudioMultiGuest {
 		if options.Broadcast.ID == "" {
 			options.Broadcast = NewBroadcast(s, source, cfg, time.Now())
 		}
-		room, err := bigo.OpenGuestRoom(ctx, source, recovery)
+		room, err := bigo.OpenGuestRoom(ctx, source, recovery, splitInterval)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -80,7 +85,10 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		h.roomKind = source.RoomKind
 		return h, nil
 	}
-	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery)
+	if cfg.SplitMinutes > 0 && options.Broadcast.ID == "" {
+		options.Broadcast = NewSegmentedBroadcast(s, source, cfg, time.Now())
+	}
+	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery, splitInterval)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -92,6 +100,9 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	if h != nil {
 		h.roomKind = source.RoomKind
 		h.broadcast = options.Broadcast
+		if h.broadcast.Segmented && h.broadcast.StartedAt.IsZero() {
+			h.broadcast.StartedAt = h.StartedAt
+		}
 	}
 	return h, err
 }
@@ -116,6 +127,10 @@ func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string,
 }
 
 func recordingArgs(stream io.ReadCloser, path string) []string {
+	return append(recordingInputArgs(stream), "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
+}
+
+func recordingInputArgs(stream io.ReadCloser) []string {
 	args := []string{"-hide_banner", "-loglevel", "warning", "-nostats", "-n"}
 	clock, ok := stream.(interface{ NativeTimestamps() bool })
 	native := ok && clock.NativeTimestamps()
@@ -132,16 +147,18 @@ func recordingArgs(stream io.ReadCloser, path string) []string {
 		// for a missing timestamp.
 		args = append(args, "-bsf:v", `setts=pts='if(gt((PTS-DTS)*TB,10)*gt(DTS,-9223372036854775808),DTS,PTS)'`)
 	}
-	return append(args, "-f", "matroska", "-cluster_time_limit", "1000", "-cluster_size_limit", "1048576", "-flush_packets", "1", path)
+	return args
 }
 
 func recordingPath(s state.Streamer, cfg state.Config, stamp time.Time, suffix string) string {
-	id := safeName(s.ID)
-	dir := cfg.RecordingPath
+	return filepath.Join(recordingDirectory(s, cfg), safeName(s.ID)+"_"+stamp.Format("2006-01-02_15-04-05")+"_"+suffix+".mkv")
+}
+
+func recordingDirectory(s state.Streamer, cfg state.Config) string {
 	if cfg.FolderPerStreamer {
-		dir = filepath.Join(dir, id+"_"+safeName(s.DisplayName()))
+		return filepath.Join(cfg.RecordingPath, safeName(s.ID)+"_"+safeName(s.DisplayName()))
 	}
-	return filepath.Join(dir, id+"_"+stamp.Format("2006-01-02_15-04-05")+"_"+suffix+".mkv")
+	return cfg.RecordingPath
 }
 
 func finish(cmd *exec.Cmd, wait <-chan error) error {

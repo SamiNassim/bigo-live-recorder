@@ -53,6 +53,14 @@ type nativeTSMux struct {
 	timing                       *CaptureTiming
 }
 
+func (m *nativeTSMux) splitDue(f nativeMediaFrame, interval time.Duration) bool {
+	if !m.started || interval <= 0 {
+		return false
+	}
+	stamp := int64(int32(f.pts-m.base))*90 + m.offset
+	return stamp >= interval.Milliseconds()*90
+}
+
 func (m *nativeTSMux) writeFrame(f nativeMediaFrame) error {
 	codec := byte(0)
 	if f.video {

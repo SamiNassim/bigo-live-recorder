@@ -13,7 +13,7 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 	process := e.process
 	quiet := false
 	if it := e.items[id]; it != nil {
-		quiet = it.broadcastID != ""
+		quiet = it.broadcastID != "" && !it.segmented
 	}
 	e.wg.Go(func() {
 		select {

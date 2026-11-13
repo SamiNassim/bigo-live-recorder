@@ -33,6 +33,7 @@ type recordingTree struct {
 	broadcasts []state.Broadcast
 	roots      []recordingKey
 	files      map[string]int
+	clips      map[string]int
 	groups     map[string]recordingGroup
 	valid      bool
 }
@@ -52,7 +53,7 @@ func (a *application) recordingGroups() *recordingTree {
 }
 
 func buildRecordingTree(records []state.Recording, broadcasts []state.Broadcast) recordingTree {
-	tree := recordingTree{records: records, broadcasts: slices.Clone(broadcasts), files: make(map[string]int, len(records)), groups: make(map[string]recordingGroup), valid: true}
+	tree := recordingTree{records: records, broadcasts: slices.Clone(broadcasts), files: make(map[string]int, len(records)), clips: make(map[string]int), groups: make(map[string]recordingGroup), valid: true}
 	metadata := make(map[string]state.Broadcast, len(broadcasts))
 	for _, b := range broadcasts {
 		metadata[b.ID] = b
@@ -113,6 +114,9 @@ func buildRecordingTree(records []state.Recording, broadcasts []state.Broadcast)
 		if !g.broadcast.StartedAt.IsZero() {
 			g.started = g.broadcast.StartedAt
 		}
+		if g.broadcast.Segmented && g.broadcast.EndedAt.After(g.ended) {
+			g.ended = g.broadcast.EndedAt
+		}
 		if g.files == 0 { // Only the replay remains in history.
 			r := tree.file(g.children[0])
 			g.started, g.bytes = r.StartedAt, r.Bytes
@@ -132,6 +136,11 @@ func buildRecordingTree(records []state.Recording, broadcasts []state.Broadcast)
 			}
 			return cmp.Compare(a.ID, b.ID)
 		})
+		if g.broadcast.Segmented {
+			for i, child := range g.children {
+				tree.clips[child.ID] = i + 1
+			}
+		}
 		tree.groups[id] = g
 	}
 	slices.SortFunc(tree.roots, func(a, b recordingKey) int {
@@ -197,6 +206,13 @@ func (g recordingGroup) name() string {
 		return g.broadcast.StreamerID
 	}
 	return "Multi-guest broadcast"
+}
+
+func (g recordingGroup) kind() string {
+	if g.broadcast.Segmented {
+		return "Split recording"
+	}
+	return "Multi-guest"
 }
 
 func (g recordingGroup) replayIsPartial() bool {

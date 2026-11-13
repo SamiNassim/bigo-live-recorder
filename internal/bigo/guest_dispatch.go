@@ -101,6 +101,7 @@ func (r *guestRoom) dispatch() {
 				}
 				member = &guestMember{capture: newGuestCapture(r.parent, r.recovery)}
 				member.capture.epoch = r.epoch
+				member.capture.splitInterval = r.splitInterval
 				r.members[incoming.uid] = member
 				select {
 				case r.guests <- Participant{UID: incoming.uid, Capture: member.capture}:

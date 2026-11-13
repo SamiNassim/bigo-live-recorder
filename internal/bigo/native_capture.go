@@ -36,6 +36,7 @@ type nativeCapture struct {
 	epoch             time.Time
 	timing            *CaptureTiming
 	videoHeaders      nativeVideoHeaders
+	splitInterval     time.Duration
 }
 
 type nativeVideoGOP struct {
@@ -413,6 +414,9 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 		}
 		if f.reset {
 			c.clearPreroll()
+			if !c.guest {
+				c.videoHeaders = nativeVideoHeaders{}
+			}
 			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, timing: c.timing}
 			draining = false
 			continue
@@ -421,15 +425,21 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 			continue
 		}
 		if f.video {
+			var boundary nativeMediaFrame
+			var headersReady bool
+			if c.guest || c.splitInterval > 0 {
+				boundary, headersReady = c.videoHeaders.prepare(f)
+			}
 			if c.guest {
-				f, _ = c.videoHeaders.prepare(f)
+				f = boundary
 			}
 			fresh, err := nativeVideoType(f.codec)
 			if err != nil {
 				writer.CloseWithError(err)
 				return
 			}
-			if fresh != codec {
+			timed := fresh == codec && headersReady && mux.splitDue(f, c.splitInterval)
+			if fresh != codec || timed {
 				if !f.key {
 					if !warnedPrefix && c.recovery.Report != nil {
 						c.recovery.Report("WARN", "Video encoding changed without a keyframe; waiting for decodable video")
@@ -437,10 +447,15 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 					}
 					continue
 				}
+				reason := "Video encoding changed; continuing in a new recording"
+				if timed {
+					f = boundary
+					reason = "Recording split interval reached; continuing in a new file"
+				}
 				// Audio travels on an independent socket. Keep this file open
 				// until audio reaches the new keyframe, otherwise late samples
 				// from before the cut would be discarded by the next file.
-				reason, err := c.videoBoundary(f, &mux, config)
+				reason, err = c.videoBoundary(f, &mux, config, reason)
 				if err != nil {
 					writer.CloseWithError(err)
 					return
@@ -507,13 +522,13 @@ func (c *nativeCapture) prependPreroll(tail *nativeFrameQueue) {
 	c.gops = nil
 }
 
-func (c *nativeCapture) videoBoundary(first nativeMediaFrame, mux *nativeTSMux, config nativeAudioConfig) (string, error) {
+func (c *nativeCapture) videoBoundary(first nativeMediaFrame, mux *nativeTSMux, config nativeAudioConfig, reason string) (string, error) {
 	queue := newNativeFrameQueue(1 << 20)
 	if err := queue.push(first); err != nil {
 		queue.close()
 		return "", err
 	}
-	for {
+	for !mux.noAudio {
 		f, err := c.nextFrame(c.ctx)
 		if err != nil {
 			if c.ctx.Err() != nil {
@@ -526,7 +541,7 @@ func (c *nativeCapture) videoBoundary(first nativeMediaFrame, mux *nativeTSMux, 
 			queue.finish(err)
 			break
 		}
-		if !f.video && !f.reset && int32(f.pts-first.pts) < 0 {
+		if !f.video && !f.reset && !f.cut && int32(f.pts-first.pts) < 0 {
 			// A late audio configuration change can precede this video cut.
 			// Roll that change first, retaining the already-buffered video.
 			if audioConfig(f) != config {
@@ -549,11 +564,11 @@ func (c *nativeCapture) videoBoundary(first nativeMediaFrame, mux *nativeTSMux, 
 			queue.close()
 			return "", err
 		}
-		if f.reset || (!f.video && int32(f.pts-first.pts) >= 0) {
+		if f.reset || f.cut || (!f.video && int32(f.pts-first.pts) >= 0) {
 			break
 		}
 	}
 	queue.finish(nil)
 	c.deferred = append([]*nativeFrameQueue{queue}, c.deferred...)
-	return "Video encoding changed; continuing in a new recording", nil
+	return reason, nil
 }
