@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 func ManagedPath() (string, error) {
@@ -50,27 +52,35 @@ func Find(configured string) (string, error) {
 	return "", errors.New("FFmpeg was not found; install it from Settings")
 }
 
-// Check verifies that a discovered executable really starts, not just that a
-// file with the right name exists. Run it off the UI thread.
+// Check verifies the discovered executable and returns its version token.
+// Run it off the UI thread.
 func Check(ctx context.Context, configured string) (string, error) {
 	path, err := Find(configured)
 	if err != nil {
 		return "", err
 	}
-	if err = probe(ctx, path); err != nil {
-		return "", err
-	}
-	return path, nil
+	return probeVersion(ctx, path)
 }
 
-func probe(parent context.Context, path string) error {
+func probe(ctx context.Context, path string) error {
+	_, err := probeVersion(ctx, path)
+	return err
+}
+
+func probeVersion(parent context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "-version")
 	configureCommand(cmd)
 	out, err := cmd.Output()
-	if err != nil || !strings.HasPrefix(string(out), "ffmpeg version ") {
-		return errors.New("FFmpeg could not start; choose a compatible executable or install it from Settings")
+	const message = "FFmpeg could not start; choose a compatible executable or install it from Settings"
+	if err != nil {
+		return "", fault.Wrap(message, err)
 	}
-	return nil
+	line, _, _ := strings.Cut(string(out), "\n")
+	version, ok := strings.CutPrefix(line, "ffmpeg version ")
+	if fields := strings.Fields(version); ok && len(fields) > 0 {
+		return fields[0], nil
+	}
+	return "", fault.Wrap(message, errors.New("FFmpeg -version did not return a version banner"))
 }

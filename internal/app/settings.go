@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bigo-live-recorder/internal/ffmpeg"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
 )
@@ -39,7 +38,7 @@ func (a *application) saveSettings(cfg state.Config) error {
 	if err := a.engine.SaveConfig(cfg); err != nil {
 		return err
 	}
-	_, ffmpegErr := ffmpeg.Check(a.ctx, cfg.FFmpegPath)
+	ffmpegErr := a.checkFFmpegVersion(cfg.FFmpegPath)
 	a.update(func() {
 		a.cfg = a.store.Config()
 		a.loadNumbers()

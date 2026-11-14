@@ -6,10 +6,55 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
+
+func TestNativeMediaEOFIdentifiesFailedReceiver(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	for _, video := range []bool{false, true} {
+		conn, err := net.DialTimeout("tcp4", listener.Addr().String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		remote, err := listener.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		failed := &nativeMediaConn{Conn: conn, video: video, setupStarted: started}
+		peer := &nativeMediaConn{video: !video, setupStarted: started}
+		peer.lastPlayable.Store(int64(time.Since(started)))
+		errs := make(chan error, 1)
+		go func() {
+			errs <- failed.trackFailure(peer, failed.receive(context.Background(), nil))
+		}()
+		remote.Close()
+		select {
+		case err = <-errs:
+		case <-time.After(time.Second):
+			t.Fatal("receiver did not detect the closed socket")
+		}
+		details := fault.Details(err)
+		if errors.Is(err, io.EOF) || !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("%s disconnect would change recovery behavior: %v", failed.track(), err)
+		}
+		if !strings.Contains(details, "Origin "+failed.track()+" receiver stopped") ||
+			!strings.Contains(details, failed.track()+" none received") ||
+			!strings.Contains(details, "ago") || !strings.Contains(details, "EOF") {
+			t.Fatalf("%s disconnect lost track or transport context: %s", failed.track(), details)
+		}
+	}
+}
 
 func TestNativeCodecChangesKeepBothMediaSockets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

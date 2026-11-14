@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -139,6 +140,9 @@ func (e *Engine) startRecording(ctx context.Context, streamer state.Streamer, so
 		},
 		Report:      func(level, message string) { e.log.Write(level, streamer.ID, message) },
 		ReportError: func(level, message string, err error) { e.log.WriteError(level, streamer.ID, message, err) },
+		ReportDetails: func(level, message, details string, err error) {
+			e.log.WriteDetails(level, streamer.ID, message, details, err)
+		},
 	}
 	if e.wantsNative(streamer, cfg) {
 		recovery.Origin = func(ctx context.Context, current bigo.Stream) (bigo.Stream, error) {
@@ -292,7 +296,9 @@ func (e *Engine) SaveConfig(c state.Config) error {
 	}
 	e.mu.Unlock()
 	e.wakeUp()
-	e.log.Write("INFO", "", "Settings saved")
+	e.log.WriteDetails("INFO", "settings", "Settings saved",
+		fmt.Sprintf("Native notifications: %t. Polling backup: %t. Request interval: %ds. Default quality: %s. Split interval: %d min (0 disables timed splitting). Processed copies: %t.",
+			c.NativeListening, c.PollingBackup, c.RequestDelaySeconds, c.StreamQuality, c.SplitMinutes, c.PostProcess), nil)
 	return nil
 }
 
@@ -858,6 +864,7 @@ func (e *Engine) check(id string) {
 	recordCtx, recordCancel := context.WithCancel(e.ctx)
 	it.recordCancel = recordCancel
 	e.mu.Unlock()
+	started := time.Now()
 	h, startErr := e.start(recordCtx, streamer, stream, cfg)
 	e.mu.Lock()
 	if startErr != nil {
@@ -891,7 +898,8 @@ func (e *Engine) check(id string) {
 		if fault.RequiresAction(startErr) {
 			level = "ERROR"
 		}
-		e.log.WriteError(level, id, it.row.Error+". "+retryMessage(cfg, it), startErr)
+		e.log.WriteDetails(level, id, it.row.Error+". "+retryMessage(cfg, it),
+			fmt.Sprintf("Recording startup failed after %s. %s", time.Since(started).Round(time.Millisecond), recordingSettings(streamer, cfg)), startErr)
 		return
 	}
 	it.handle = h
@@ -977,9 +985,9 @@ func (e *Engine) completed(it *item) {
 		if e.ctx.Err() == nil && !it.row.Streamer.Paused {
 			message += " Monitoring will continue."
 		}
-		e.log.WriteError(level, it.row.Streamer.ID, message, r.Err)
+		e.log.WriteDetails(level, it.row.Streamer.ID, message, recordingDetails(r), r.Err)
 	} else if (it.broadcastID == "" || it.segmented) && !alreadyFinalized && r.Path != "" {
-		e.log.Write("INFO", it.row.Streamer.ID, fmt.Sprintf("Recording finalized (%d bytes)", r.Bytes))
+		e.log.WriteDetails("INFO", it.row.Streamer.ID, "Recording finalized", recordingDetails(r), nil)
 	}
 	if r.RoomEnded && it.broadcastID != "" && !it.segmented {
 		e.finishBroadcast(it.broadcastID)
@@ -1060,10 +1068,10 @@ func (e *Engine) fileChanges(it *item) {
 		if r := change.Result; r != nil {
 			if r.Err != nil {
 				level, message := recordingFailure(*r, true)
-				e.log.WriteError(level, id, message, r.Err)
+				e.log.WriteDetails(level, id, message, recordingDetails(*r), r.Err)
 			} else {
 				if it.broadcastID == "" || it.segmented {
-					e.log.Write("INFO", id, fmt.Sprintf("Recording file finalized (%d bytes)", r.Bytes))
+					e.log.WriteDetails("INFO", id, "Recording file finalized", recordingDetails(*r), nil)
 				}
 				if it.config.PostProcess && r.Bytes > 0 && e.ctx.Err() == nil {
 					e.processCopy(id, r.Path, it.config)
@@ -1079,7 +1087,8 @@ func (e *Engine) fileChanges(it *item) {
 			if first {
 				e.notifyRecording(it, change.Path)
 			} else if it.broadcastID == "" || it.segmented {
-				e.log.Write("INFO", id, "Recording continued: "+change.Path)
+				e.log.WriteDetails("INFO", id, "Recording continued in a new file",
+					fmt.Sprintf("File: %q. Opened at %s.", filepath.Base(change.Path), change.StartedAt.Format(time.RFC3339Nano)), nil)
 			}
 		}
 	}

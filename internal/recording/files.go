@@ -184,7 +184,14 @@ func (f *fileWriter) result(copyErr, waitErr error, canceled bool) (Result, bool
 	if size == 0 && err == nil {
 		err = fault.Action("FFmpeg produced no saved media", errors.New("recording file is empty or missing"))
 	}
-	return Result{Path: f.path, Bytes: size, EndedAt: time.Now(), Err: err}, noMedia
+	source := "web HLS"
+	if f.part.Native {
+		source = "Origin"
+		if f.part.ParticipantUID != 0 {
+			source = "multi-guest Origin"
+		}
+	}
+	return Result{Path: f.path, Bytes: size, Source: source, StartedAt: f.started, EndedAt: time.Now(), Err: err}, noMedia
 }
 
 func (f *fileWriter) finish(copyErr error, canceled bool) Result {
@@ -204,6 +211,9 @@ func (f *fileWriter) finish(copyErr error, canceled bool) Result {
 		waitErr = finish(f.cmd, f.waited)
 	}
 	result, noMedia := f.result(copyErr, waitErr, canceled)
+	if waitErr == nil {
+		result.FFmpegWarnings = f.stderr.String()
+	}
 	f.timingOnce.Do(func() {
 		if f.timing != nil {
 			f.part.Timing.Observe(nil)

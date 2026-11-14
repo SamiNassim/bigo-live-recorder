@@ -104,18 +104,20 @@ func (e *Engine) notifyRecording(it *item, path string) {
 		return
 	}
 	it.recordNotified = true
-	message := "Recording started: " + path
+	message := "Recording started"
+	details := fmt.Sprintf("File: %q. %s", filepath.Base(path), recordingSettings(it.row.Streamer, it.config))
 	if it.broadcastID != "" && !it.segmented {
 		e.persist(func(data *state.Data) {
 			for i := range data.Broadcasts {
 				if data.Broadcasts[i].ID == it.broadcastID {
 					data.Broadcasts[i].Notified = true
-					message = "Multi-guest broadcast recording started: " + data.Broadcasts[i].Directory
+					message = "Multi-guest broadcast recording started"
+					details += fmt.Sprintf(" Broadcast folder: %q.", filepath.Base(data.Broadcasts[i].Directory))
 				}
 			}
 		})
 	}
-	e.log.Write("INFO", it.row.Streamer.ID, message)
+	e.log.WriteDetails("INFO", it.row.Streamer.ID, message, details, nil)
 	select {
 	case e.events <- Event{it.row.Streamer.DisplayName(), it.row.Streamer.ID, path}:
 	default:
@@ -160,7 +162,8 @@ func (e *Engine) finishBroadcast(id string) {
 		return
 	}
 	if ended.ID != "" && ended.Files > 0 {
-		e.log.Write("INFO", ended.StreamerID, fmt.Sprintf("Multi-guest broadcast finalized: room ended; %d files saved (%d bytes). Folder: %s", ended.Files, ended.Bytes, ended.Directory))
+		e.log.WriteDetails("INFO", ended.StreamerID, "Multi-guest broadcast finalized",
+			fmt.Sprintf("Room ended. Broadcast folder: %q. Files saved: %d. Bytes on disk: %d.", filepath.Base(ended.Directory), ended.Files, ended.Bytes), nil)
 		if _, err := os.Stat(filepath.Join(ended.Directory, timeline.JournalName)); err == nil {
 			e.persist(func(d *state.Data) {
 				for i := range d.Broadcasts {

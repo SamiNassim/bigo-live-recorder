@@ -44,7 +44,7 @@ func TestGuestRoomModeChangeFinalizesCaptureWithoutClosingBroadcast(t *testing.T
 	room.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h := startGuestRoom(ctx, cancel, "", state.Streamer{ID: "host.example"}, state.Defaults(), room, nil)
+	h := startGuestRoom(ctx, cancel, "", state.Streamer{ID: "host.example"}, state.Defaults(), room, bigo.StreamRecovery{})
 	r := h.Result()
 	if !r.RoomModeChanged || r.RoomEnded || r.Err != nil {
 		t.Fatal("mode change was confused with recording failure or room closure", r)
@@ -79,7 +79,7 @@ func TestGuestMissingVideoHeadersDoesNotStopTheRoom(t *testing.T) {
 	}
 	cfg := state.Defaults()
 	cfg.RecordingPath = t.TempDir()
-	h := startGuestRoom(ctx, cancel, ffmpeg, state.Streamer{ID: "host.example"}, cfg, room, nil)
+	h := startGuestRoom(ctx, cancel, ffmpeg, state.Streamer{ID: "host.example"}, cfg, room, bigo.StreamRecovery{})
 	defer h.Stop()
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
@@ -142,7 +142,7 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 	defer cancel()
 	streamer := state.Streamer{ID: "demo", Name: "Demo"}
 	broadcast := NewBroadcast(streamer, bigo.Stream{UID: 900000010, RoomID: "8589934634"}, cfg, time.Now())
-	h := startGuestRoom(ctx, cancel, ffmpeg, streamer, cfg, room, nil, Options{Broadcast: broadcast, GuestProfile: func(_ context.Context, uid uint32) (bigo.Profile, error) {
+	h := startGuestRoom(ctx, cancel, ffmpeg, streamer, cfg, room, bigo.StreamRecovery{}, Options{Broadcast: broadcast, GuestProfile: func(_ context.Context, uid uint32) (bigo.Profile, error) {
 		if uid == 900000001 {
 			return bigo.Profile{UID: uid, ID: "guest.one", Name: "Guest One"}, nil
 		}
@@ -196,7 +196,7 @@ func TestGuestFilesRemainIndependentAndFinalizeExactlyOnce(t *testing.T) {
 func TestGuestRoomStopWhileWaitingForMediaIsPrompt(t *testing.T) {
 	room := &fixtureGuestRoom{guests: make(chan bigo.Participant)}
 	ctx, cancel := context.WithCancel(context.Background())
-	h := startGuestRoom(ctx, cancel, "", state.Streamer{ID: "demo"}, state.Defaults(), room, nil)
+	h := startGuestRoom(ctx, cancel, "", state.Streamer{ID: "demo"}, state.Defaults(), room, bigo.StreamRecovery{})
 	if h.File() != "" || !h.Started().IsZero() {
 		t.Fatal("created a fictitious initial recording")
 	}

@@ -152,10 +152,14 @@ func (e *Engine) QueueReplay(id string) error {
 				e.log.WriteError("WARN", broadcast.StreamerID, "Could not save the confirmed room end in its timeline; original recordings are preserved.", err)
 			}
 		}
-		e.log.Write("INFO", broadcast.StreamerID, "Reconciling the multi-guest timeline and creating one replay video. Original guest files will be kept.")
+		started := time.Now()
+		details := fmt.Sprintf("Broadcast folder: %q. Files saved: %d. Replay cutoff: %s.",
+			filepath.Base(broadcast.Directory), broadcast.Files, broadcast.ReplayThrough.Format(time.RFC3339Nano))
+		e.log.WriteDetails("INFO", broadcast.StreamerID, "Creating a multi-guest replay", details, nil)
 		path, err := e.replay(e.ctx, broadcast, cfg, func(p recording.ReplayProgress) {
 			e.setReplayProgress(id, p)
 		})
+		details += fmt.Sprintf(" Replay processing took %s.", time.Since(started).Round(time.Millisecond))
 		if e.ctx.Err() != nil {
 			return
 		} // Pending survives shutdown for the next launch.
@@ -200,9 +204,10 @@ func (e *Engine) QueueReplay(id string) error {
 			followup = true
 		}
 		if err != nil {
-			e.log.WriteError("WARN", broadcast.StreamerID, "Could not assemble the room replay. Original guest files and timing evidence are preserved; retry from recording history.", err)
+			e.log.WriteDetails("WARN", broadcast.StreamerID, "Room replay failed. Retry from recording history.", details, err)
 		} else {
-			e.log.Write("INFO", broadcast.StreamerID, fmt.Sprintf("Multi-guest replay ready (%d bytes). Original guest files kept. Replay: %s", size, path))
+			e.log.WriteDetails("INFO", broadcast.StreamerID, "Multi-guest replay ready",
+				fmt.Sprintf("%s Output file: %q. Bytes on disk: %d.", details, filepath.Base(path), size), nil)
 		}
 	})
 	return nil

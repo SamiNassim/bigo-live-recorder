@@ -32,7 +32,7 @@ func (c participantCapture) Next(ctx context.Context) (*bigo.CapturePart, error)
 	return part, err
 }
 
-func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg string, streamer state.Streamer, cfg state.Config, room bigo.GuestRoom, report func(string, string), settings ...Options) *Handle {
+func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg string, streamer state.Streamer, cfg state.Config, room bigo.GuestRoom, recovery bigo.StreamRecovery, settings ...Options) *Handle {
 	options := Options{}
 	if len(settings) > 0 {
 		options = settings[0]
@@ -48,9 +48,9 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 		var timing *timeline.Journal
 		var timingWarning sync.Once
 		reportTiming := func(err error) {
-			if report != nil && err != nil {
+			if err != nil {
 				timingWarning.Do(func() {
-					report("WARN", "Could not preserve the replay timeline. Original guest recordings continue; check available disk space and folder permissions.")
+					recovery.Log("WARN", "Could not save replay timing. Guest recordings continue.", "Could not write the replay timeline. Check available disk space and folder permissions.", err)
 				})
 			}
 		}
@@ -82,16 +82,16 @@ func startGuestRoom(ctx context.Context, cancel context.CancelFunc, ffmpeg strin
 				if profile.UID == 0 {
 					profile.UID = participant.UID
 				}
-				if lookupErr != nil && ctx.Err() == nil && report != nil {
-					report("WARN", "Could not resolve a guest's public BIGO ID; preserving its media with an unidentified guest label.")
+				if lookupErr != nil && ctx.Err() == nil {
+					recovery.Log("WARN", "Could not identify a guest. Recording continues.", fmt.Sprintf("Could not resolve a public BIGO ID for participant %d.", participant.UID), lookupErr)
 				}
 				capture := participantCapture{Capture: participant.Capture, uid: participant.UID, profile: profile, broadcast: options.Broadcast}
 				// The room owns cancellation. Closing one source closes only
 				// its capture; it must never cancel its sibling recorders.
 				child, err := startCapture(ctx, func() {}, ffmpeg, streamer, cfg, capture, nil, captureOptions{timing: timing, reportTiming: reportTiming})
 				if err != nil {
-					if ctx.Err() == nil && !errors.Is(err, io.EOF) && report != nil {
-						report("WARN", fmt.Sprintf("Could not start guest %d: %s", participant.UID, fault.Reason(err)))
+					if ctx.Err() == nil && !errors.Is(err, io.EOF) {
+						recovery.Log("WARN", "Could not start guest recording: "+fault.Reason(err), fmt.Sprintf("Participant UID: %d.", participant.UID), err)
 					}
 					if fault.RequiresAction(err) {
 						cancel()

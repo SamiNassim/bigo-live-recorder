@@ -13,7 +13,7 @@ import (
 func openNativeRecoveringStream(parent context.Context, client *http.Client, source Stream, referer string, recovery StreamRecovery) (io.ReadCloser, error) {
 	ctx, cancel := context.WithCancel(parent)
 	clock := &nativeTSClock{}
-	stream, err := openNativeStreamClock(ctx, source, clock, recovery.Report)
+	stream, setup, err := openNativeStreamClock(ctx, source, clock, recovery.Report)
 	if err != nil {
 		cancel()
 		if parent.Err() != nil {
@@ -27,9 +27,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 		source.Quality = "web"
 		return openHLSStream(parent, client, source, referer, recovery, defaultHLSPolicy(), true)
 	}
-	if recovery.Report != nil {
-		recovery.Report("INFO", "Native video and audio connected (Origin requested)")
-	}
+	recovery.Log("INFO", "Native video and audio connected (Origin requested)", setup, nil)
 	reader, writer := io.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -58,19 +56,22 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 				writer.CloseWithError(err)
 				return
 			}
-			recovery.reportError("WARN", "Stream data stopped arriving: "+fault.Reason(err)+". Attempting to reconnect while keeping the recording open.", err)
+			reconnect := newNativeRecoveryLog(err)
+			recovery.Log("WARN", "Origin stream interrupted. Reconnecting…", "Reopening both Origin media sockets while keeping the recording open.", err)
 			recovered := false
-			for attempt := 0; attempt < 3; attempt++ {
+			for attempt := 0; attempt < nativeRecoveryAttempts; attempt++ {
 				if attempt > 0 {
-					if waitHLS(ctx, 5*time.Second) != nil {
+					if waitHLS(ctx, nativeRecoveryDelay) != nil {
 						break
 					}
 				}
+				reconnect.beginAttempt(attempt + 1)
 				refreshCtx, done := context.WithTimeout(ctx, 25*time.Second)
 				fresh, refreshErr := recovery.Refresh(refreshCtx)
+				reconnect.refresh = time.Since(reconnect.attemptStarted)
 				done()
 				if refreshErr != nil {
-					err = refreshErr
+					err = reconnect.failure("source refresh", refreshErr)
 					continue
 				}
 				if fresh.Alive != 1 || (fresh.RoomID != "" && current.RoomID != "" && fresh.RoomID != current.RoomID) {
@@ -78,7 +79,7 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 					return
 				}
 				if fresh.native != nil {
-					stream, err = openNativeStreamClock(ctx, fresh, clock, recovery.Report)
+					stream, setup, err = openNativeStreamClock(ctx, fresh, clock, recovery.Report)
 				} else {
 					// An HLS fallback can have a different codec. Finalize this
 					// MKV before the monitor starts a compatible new recording.
@@ -90,14 +91,13 @@ func openNativeRecoveringStream(parent context.Context, client *http.Client, sou
 					recovered = true
 					break
 				}
+				err = reconnect.failure("media setup", err)
 			}
 			if !recovered {
 				writer.CloseWithError(fault.Wrap("could not restore the native stream after 3 attempts: "+fault.Reason(err), err))
 				return
 			}
-			if recovery.Report != nil {
-				recovery.Report("INFO", "BIGO media resumed; continuing the same recording file")
-			}
+			recovery.Log("INFO", "BIGO media resumed; continuing the same recording file", reconnect.details("restored media")+"\n"+setup, nil)
 		}
 	}()
 	return &nativeReadCloser{PipeReader: reader, cancel: cancel, done: done}, nil

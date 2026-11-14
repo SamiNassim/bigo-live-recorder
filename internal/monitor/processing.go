@@ -1,6 +1,10 @@
 package monitor
 
 import (
+	"fmt"
+	"path/filepath"
+	"time"
+
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/state"
 )
@@ -11,6 +15,7 @@ import (
 // before another UI operation can change them.
 func (e *Engine) processCopy(id, source string, cfg state.Config) {
 	process := e.process
+	queued := time.Now()
 	quiet := false
 	if it := e.items[id]; it != nil {
 		quiet = it.broadcastID != "" && !it.segmented
@@ -22,13 +27,20 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 		case <-e.ctx.Done():
 			return
 		}
+		started := time.Now()
+		details := fmt.Sprintf("Source file: %q. Output format: %q. Queue wait: %s.",
+			filepath.Base(source), cfg.OutputExtension, started.Sub(queued).Round(time.Millisecond))
 		if !quiet {
-			e.log.Write("INFO", id, "Creating a processed copy; original MKV is preserved")
+			e.log.WriteDetails("INFO", id, "Creating a processed copy; original MKV is preserved", details, nil)
 		}
 		path, err := process(e.ctx, source, cfg)
+		details += fmt.Sprintf(" Processing ran for %s.", time.Since(started).Round(time.Millisecond))
+		if path != "" {
+			details += fmt.Sprintf(" Output file: %q.", filepath.Base(path))
+		}
 		if e.ctx.Err() != nil {
 			if !quiet {
-				e.log.Write("INFO", id, "Processing interrupted on shutdown; original MKV is preserved")
+				e.log.WriteDetails("INFO", id, "Processing interrupted on shutdown; original MKV is preserved", details, err)
 			}
 			return
 		}
@@ -47,9 +59,9 @@ func (e *Engine) processCopy(id, source string, cfg state.Config) {
 			if fault.RequiresAction(err) {
 				level = "ERROR"
 			}
-			e.log.WriteError(level, id, "Processed copy failed: "+fault.Reason(err), err)
+			e.log.WriteDetails(level, id, "Processed copy failed: "+fault.Reason(err), details, err)
 		} else if !quiet {
-			e.log.Write("INFO", id, "Processed copy ready; original MKV kept")
+			e.log.WriteDetails("INFO", id, "Processed copy ready; original MKV kept", details, nil)
 		}
 	})
 }

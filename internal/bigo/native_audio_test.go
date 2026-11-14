@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 func nativeTestAudioPacket(samples ...[]byte) []byte {
@@ -173,12 +175,13 @@ func TestNativeStartupWaitsForAudioOnVideoClock(t *testing.T) {
 			})
 			type result struct {
 				stream io.ReadCloser
+				setup  string
 				err    error
 			}
 			done := make(chan result, 1)
 			go func() {
-				r, err := openNativeStream(ctx, Stream{native: &pJoinChannelRes{source: 1234, sid: 42, video: []mediaProxy{video}, media: []mediaProxy{audio}}})
-				done <- result{r, err}
+				r, setup, err := openNativeStreamClock(ctx, Stream{native: &pJoinChannelRes{source: 1234, sid: 42, video: []mediaProxy{video}, media: []mediaProxy{audio}}}, nil, nil)
+				done <- result{r, setup, err}
 			}()
 			select {
 			case <-videoSent:
@@ -201,6 +204,19 @@ func TestNativeStartupWaitsForAudioOnVideoClock(t *testing.T) {
 				}
 				if (r.err == nil) != (freshPTS == 4014) {
 					t.Fatal("incorrect startup clock validation", r.err)
+				}
+				details := r.setup
+				want := []string{"video TCP dial", "audio TCP dial", "video login write", "audio login write", "video subscription confirmed", "first video keyframe"}
+				if r.err == nil {
+					want = append(want, "first aligned audio", "14 ms")
+				} else {
+					details = fault.Details(r.err)
+					want = append(want, "20000 ms")
+				}
+				for _, milestone := range want {
+					if !strings.Contains(details, milestone) {
+						t.Errorf("setup diagnostics lack %q: %s", milestone, details)
+					}
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("startup did not finish after fresh audio")

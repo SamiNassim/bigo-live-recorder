@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -243,7 +244,8 @@ func Run(dir string, preview bool) error {
 	if previousCrash != "" {
 		log.Write("WARN", "diagnostics", "The previous run crashed. Its diagnostic stack trace is saved in "+filepath.Base(previousCrash)+" in the configuration folder.")
 	}
-	log.Write("INFO", "app", "Application started")
+	log.WriteDetails("INFO", "app", "Application started",
+		fmt.Sprintf("App version: %s. Platform: %s/%s. Preview mode: %t.", Version, runtime.GOOS, runtime.GOARCH, preview), nil)
 	a := newApplication(store, log)
 	mygo.App.SetWindowStateStore(windowStore{store})
 	a.preview = preview

@@ -747,15 +747,16 @@ func (h *Hub) reportConnectionError(err error) {
 	h.mu.Lock()
 	repeated := message == h.lastError
 	h.lastError = message
+	ready, total := h.status.ReadyTargets, h.uniqueTargetCountLocked()
 	h.status = RuntimeStatus{
 		State:        "retrying",
 		Message:      message,
 		ReadyTargets: 0,
-		TotalTargets: h.uniqueTargetCountLocked(),
+		TotalTargets: total,
 	}
 	h.mu.Unlock()
 	if !repeated && !errors.Is(err, context.Canceled) {
-		h.warn(message, err)
+		h.warn(message, fault.WithDetails(err, fmt.Sprintf("Native notification listener interrupted. Targets ready before interruption: %d of %d.", ready, total)))
 	} else if !repeated && h.info != nil {
 		h.info(message)
 	}

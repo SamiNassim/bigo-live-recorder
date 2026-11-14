@@ -19,6 +19,8 @@ type StreamRecovery struct {
 	Report  func(level, message string)
 	// ReportError stores an optional diagnostic cause separately from the text.
 	ReportError func(level, message string, cause error)
+	// ReportDetails attaches diagnostic context to a short event message.
+	ReportDetails func(level, message, details string, cause error)
 	// Origin retries native playback only while a web fallback is in use. It
 	// must use the existing room and shared messaging login, without polling
 	// web presence or playback APIs.
@@ -30,7 +32,14 @@ type StreamRecovery struct {
 }
 
 func (r StreamRecovery) reportError(level, message string, cause error) {
-	if r.ReportError != nil {
+	r.Log(level, message, "", cause)
+}
+
+// Log keeps a short message and any diagnostic details together as one event.
+func (r StreamRecovery) Log(level, message, details string, cause error) {
+	if r.ReportDetails != nil {
+		r.ReportDetails(level, message, details, cause)
+	} else if cause != nil && r.ReportError != nil {
 		r.ReportError(level, message, cause)
 	} else if r.Report != nil {
 		r.Report(level, message)
@@ -59,6 +68,7 @@ type hlsReader struct {
 	enabled, recovering        bool
 	lastProgress, nextRefresh  time.Time
 	refreshAttempts            int
+	lastRefreshDuration        time.Duration
 	failedSources              map[string]time.Time
 	lastFailure                error
 }
@@ -75,7 +85,8 @@ func (r *hlsReader) beginRecovery(reason string, cause error) {
 	}
 	if !r.recovering {
 		r.recovering = true
-		r.recovery.reportError("WARN", reason+". Attempting to restore web playback while keeping the recording open.", cause)
+		r.recovery.Log("WARN", "Web playback interrupted. Reconnecting…",
+			fmt.Sprintf("%s. Time since last media progress: %s. Keeping the recording open.", reason, time.Since(r.lastProgress).Round(time.Millisecond)), cause)
 	}
 }
 
@@ -112,7 +123,7 @@ func (r *hlsReader) read(ctx context.Context) error {
 					return err
 				}
 				r.failSource()
-				r.beginRecovery("Could not download the next part of the web stream: "+fault.Reason(err), err)
+				r.beginRecovery(fmt.Sprintf("Could not download HLS segment %d", segment.sequence), err)
 				break
 			}
 			if n, err := r.output.Write(media); err != nil {
@@ -121,15 +132,21 @@ func (r *hlsReader) read(ctx context.Context) error {
 				return io.ErrShortWrite
 			}
 			r.cursor.accept(segment, r.playlist)
-			r.lastProgress = time.Now()
+			now := time.Now()
 			if r.recovering {
-				r.report("INFO", "HLS playback resumed; continuing the same recording file")
+				details := fmt.Sprintf("Time since last media progress: %s. Playback refresh requests: %d. Resumed at HLS segment %d.",
+					now.Sub(r.lastProgress).Round(time.Millisecond), r.refreshAttempts, segment.sequence)
+				if r.refreshAttempts > 0 {
+					details += fmt.Sprintf(" Last refresh took %s.", r.lastRefreshDuration.Round(time.Millisecond))
+				}
+				r.recovery.Log("INFO", "HLS playback resumed; continuing the same recording file", details, r.lastFailure)
 				r.recovering = false
 				r.refreshAttempts = 0
 				r.nextRefresh = time.Time{}
 				r.lastFailure = nil
 				clear(r.failedSources)
 			}
+			r.lastProgress = now
 		}
 		if r.promoted() {
 			return nil
@@ -179,7 +196,7 @@ func (r *hlsReader) read(ctx context.Context) error {
 				return err
 			}
 			r.failSource()
-			r.beginRecovery("Could not update the web stream playlist: "+fault.Reason(err), err)
+			r.beginRecovery("Could not update the HLS playlist", err)
 			r.playlist.segments = nil
 		} else {
 			r.playlist, r.mediaURL = playlist, mediaURL
@@ -243,7 +260,9 @@ func (r *hlsReader) recover(ctx context.Context) (loaded, ended bool) {
 	r.nextRefresh = time.Now().Add(r.policy.refreshEvery)
 	requestCtx, cancel := r.requestContext(ctx)
 	refreshCtx, cancelRefresh := context.WithTimeout(requestCtx, 30*time.Second)
+	started := time.Now()
 	current, err := r.recovery.Refresh(refreshCtx)
+	r.lastRefreshDuration = time.Since(started)
 	cancelRefresh()
 	cancel()
 	if err != nil {
@@ -251,7 +270,8 @@ func (r *hlsReader) recover(ctx context.Context) (loaded, ended bool) {
 			return false, false
 		}
 		r.lastFailure = err
-		r.recovery.reportError("WARN", "Could not refresh the web stream: "+fault.Reason(err)+". Retrying media sources while keeping the recording open.", err)
+		r.recovery.Log("WARN", "Web playback refresh failed. Retrying…",
+			fmt.Sprintf("Web playback refresh %d of 3 took %s. The recording remains open.", r.refreshAttempts, r.lastRefreshDuration.Round(time.Millisecond)), err)
 		return false, false
 	}
 	if current.Alive == 1 && current.RoomID != "" && r.source.RoomID != "" && current.RoomID != r.source.RoomID {

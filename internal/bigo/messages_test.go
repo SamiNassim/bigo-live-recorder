@@ -66,7 +66,7 @@ func TestNativeRecoveryDistinguishesConfirmedEndFromExhaustedRetries(t *testing.
 			failed := make(chan error, 1)
 			failed <- io.ErrUnexpectedEOF
 			session := &nativeMediaSession{ctx: ctx, cleanup: func() {}, workers: &sync.WaitGroup{}, failed: failed, events: make(chan nativeMediaFrame)}
-			var messages []string
+			var messages, details []string
 			attempts := 0
 			c := &nativeCapture{ctx: ctx, cancel: cancel, queue: newNativeFrameQueue(1024), done: make(chan struct{}), session: session}
 			c.recovery = StreamRecovery{
@@ -77,7 +77,10 @@ func TestNativeRecoveryDistinguishesConfirmedEndFromExhaustedRetries(t *testing.
 					}
 					return Stream{}, fault.Wrap("native source lookup timed out", context.DeadlineExceeded)
 				},
-				Report: func(level, message string) { messages = append(messages, level+" "+message) },
+				ReportDetails: func(level, message, detail string, cause error) {
+					messages = append(messages, level+" "+message)
+					details = append(details, detail+"\n"+fault.Details(cause))
+				},
 			}
 			go c.receive(Stream{Alive: 1, UID: 123}, session)
 			defer c.Close()
@@ -94,6 +97,8 @@ func TestNativeRecoveryDistinguishesConfirmedEndFromExhaustedRetries(t *testing.
 				}
 			} else if attempts != 3 || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "after 3 attempts") || strings.Contains(joined, "broadcast ended") || !strings.Contains(joined, "attempt 3 of 3") {
 				t.Fatal("recovery failed to explain its attempts without claiming offline", attempts, err, joined)
+			} else if !strings.Contains(strings.Join(details, "\n"), "failed during source refresh") || !strings.Contains(fault.Details(err), "Attempt 3 of 3") {
+				t.Fatal("recovery did not retain the phase and attempt of its failures", details, fault.Details(err))
 			}
 		})
 	}

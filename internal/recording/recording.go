@@ -22,8 +22,11 @@ import (
 type Result struct {
 	Path            string
 	Bytes           int64
+	Source          string
+	StartedAt       time.Time
 	EndedAt         time.Time
 	Err             error
+	FFmpegWarnings  string
 	RoomEnded       bool
 	RoomModeChanged bool
 }
@@ -81,7 +84,7 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 			cancel()
 			return nil, err
 		}
-		h := startGuestRoom(ctx, cancel, ffmpeg, s, cfg, room, recovery.Report, options)
+		h := startGuestRoom(ctx, cancel, ffmpeg, s, cfg, room, recovery, options)
 		h.roomKind = source.RoomKind
 		return h, nil
 	}

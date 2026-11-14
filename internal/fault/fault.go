@@ -22,6 +22,19 @@ func (e *failure) Unwrap() error { return e.cause }
 // Wrap preserves errors.Is/As while keeping transport details out of the UI.
 func Wrap(message string, cause error) error { return &failure{message, cause} }
 
+type detailed struct {
+	error
+	details string
+}
+
+func (e *detailed) Unwrap() error { return e.error }
+func (e *detailed) DiagnosticDetails() string {
+	return e.details + "\n" + Details(e.error)
+}
+
+// WithDetails attaches context without changing the readable reason or cause.
+func WithDetails(err error, details string) error { return &detailed{err, details} }
+
 type actionRequired struct{ error }
 
 func (e *actionRequired) Unwrap() error { return e.error }

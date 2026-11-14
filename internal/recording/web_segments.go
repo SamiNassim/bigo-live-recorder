@@ -78,5 +78,8 @@ func (f *fileWriter) finishWeb(h *Handle, copyErr error, canceled bool) {
 	}
 	f.publishWebSegments(h)
 	result, _ := f.result(copyErr, *f.exitErr, canceled)
+	if *f.exitErr == nil {
+		result.FFmpegWarnings = f.stderr.String()
+	}
 	f.saved = &result
 }

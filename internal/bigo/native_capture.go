@@ -56,9 +56,7 @@ func newNativeCaptureWithFallback(parent context.Context, source Stream, recover
 		return nil, err
 	}
 	c := &nativeCapture{ctx: ctx, cancel: cancel, queue: newNativeFrameQueue(8 << 20), done: make(chan struct{}), recovery: recovery, session: session, openFallback: openFallback}
-	if recovery.Report != nil {
-		recovery.Report("INFO", "Native video and audio connected (Origin requested)")
-	}
+	recovery.Log("INFO", "Native video and audio connected (Origin requested)", session.setup, nil)
 	go c.receive(source, session)
 	return c, nil
 }
@@ -116,6 +114,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			c.queue.finish(c.ctx.Err())
 			return
 		}
+		reconnect := newNativeRecoveryLog(err)
 		if flushErr := order.flush(nil, c.queue.push); flushErr != nil {
 			c.queue.finish(flushErr)
 			return
@@ -132,7 +131,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			c.queue.finish(err)
 			return
 		}
-		c.recovery.reportError("WARN", "Stream data stopped arriving: "+fault.Reason(err)+". Attempting to reconnect while keeping the recording open.", err)
+		c.recovery.Log("WARN", "Origin stream interrupted. Reconnecting…", "Reopening both Origin media sockets while keeping the recording open.", err)
 		session.Close()
 		recovered := false
 		for attempt := 0; attempt < nativeRecoveryAttempts; attempt++ {
@@ -140,37 +139,37 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				break
 			}
 			if attempt > 0 {
-				c.recovery.reportError("WARN", fmt.Sprintf("Could not reconnect to the stream: %s. Retrying in %s (attempt %d of %d).", fault.Reason(err), nativeRecoveryDelay, attempt+1, nativeRecoveryAttempts), err)
+				message := fmt.Sprintf("Origin reconnect failed. Retrying in %s (attempt %d of %d).", nativeRecoveryDelay, attempt+1, nativeRecoveryAttempts)
+				c.recovery.Log("WARN", message, "", err)
 			}
 			if attempt > 0 && waitHLS(c.ctx, nativeRecoveryDelay) != nil {
 				break
 			}
+			reconnect.beginAttempt(attempt + 1)
 			ctx, cancel := context.WithTimeout(c.ctx, 25*time.Second)
 			fresh, refreshErr := c.recovery.Refresh(ctx)
+			reconnect.refresh = time.Since(reconnect.attemptStarted)
 			cancel()
 			if refreshErr != nil {
-				err = refreshErr
+				err = reconnect.failure("source refresh", refreshErr)
 				continue
 			}
 			if fresh.RoomKind == RoomAudioMultiGuest || fresh.RoomKind == RoomHybridMultiGuest {
-				if c.recovery.Report != nil {
-					kind := "multi-guest"
-					if fresh.RoomKind == RoomAudioMultiGuest {
-						kind = "audio-only and multi-guest"
-					}
-					c.recovery.Report("INFO", "The room is now "+kind+"; finalizing this video before checking for individual guest recordings.")
+				kind := "multi-guest"
+				if fresh.RoomKind == RoomAudioMultiGuest {
+					kind = "audio-only and multi-guest"
 				}
+				c.recovery.Log("INFO", "Room is now "+kind+". Finalizing the recording.",
+					reconnect.details("stopped because the room is now "+kind), nil)
 				c.queue.finish(nil)
 				return
 			}
 			if fresh.Alive != 1 || (fresh.UID != 0 && source.UID != 0 && fresh.UID != source.UID) || (fresh.RoomID != "" && source.RoomID != "" && fresh.RoomID != source.RoomID) {
-				if c.recovery.Report != nil {
-					message := "BIGO reports a different broadcast; finalizing the previous recording"
-					if fresh.Alive != 1 {
-						message = "BIGO reports this broadcast ended; finalizing the recording"
-					}
-					c.recovery.Report("INFO", message)
+				message := "BIGO reports a different broadcast"
+				if fresh.Alive != 1 {
+					message = "BIGO reports this broadcast ended"
 				}
+				c.recovery.Log("INFO", message+". Finalizing the recording.", reconnect.details("stopped because "+message), nil)
 				c.queue.finish(nil)
 				return
 			}
@@ -181,18 +180,20 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 						c.mu.Lock()
 						c.replacement = fallback
 						c.mu.Unlock()
+						c.recovery.Log("INFO", "Origin unavailable. Switching to web playback.",
+							reconnect.details("opened web playback for a new recording file"), nil)
 						c.queue.finish(nil)
 						return
 					}
-					err = openErr
+					err = reconnect.failure("web playback setup", openErr)
 					continue
 				}
-				err = errors.New("BIGO native source is unavailable")
+				err = reconnect.failure("source selection", errors.New("BIGO native source is unavailable"))
 				continue
 			}
 			next, openErr := openNativeMediaSession(c.ctx, fresh, c.recovery.Report)
 			if openErr != nil {
-				err = openErr
+				err = reconnect.failure("media setup", openErr)
 				continue
 			}
 			session, source = next, fresh
@@ -214,9 +215,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			}
 			return
 		}
-		if c.recovery.Report != nil {
-			c.recovery.Report("INFO", "BIGO media resumed; continuing capture")
-		}
+		c.recovery.Log("INFO", "BIGO media resumed; continuing capture", reconnect.details("restored media")+"\n"+session.setup, nil)
 	}
 }
 

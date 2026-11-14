@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 func shortHLSPolicy() hlsPolicy {
@@ -128,9 +130,12 @@ func TestExpiredPlaybackURLRefreshesAndKeepsReaderOpen(t *testing.T) {
 	r := recoveryStream(t, server, Stream{HLS: server.URL + "/old.m3u8", RoomID: "same-room"}, StreamRecovery{Refresh: func(context.Context) (Stream, error) {
 		checks.Add(1)
 		return Stream{Alive: 1, RoomID: "same-room", HLS: server.URL + "/new.m3u8?token=private-fixture"}, nil
-	}, Report: func(_, message string) {
-		if strings.Contains(message, "private-fixture") {
+	}, ReportDetails: func(_, message, detail string, err error) {
+		if strings.Contains(message+detail+fault.Details(err), "private-fixture") {
 			t.Error("recovery log exposed signed URL")
+		}
+		if strings.Contains(message, "playback resumed") && (!strings.Contains(detail, "requests: 1") || !strings.Contains(detail, "segment 101")) {
+			t.Error("recovery log did not record the refresh and resumed segment", detail)
 		}
 	}})
 	readRecoveryMedia(t, r, append(a, b...))

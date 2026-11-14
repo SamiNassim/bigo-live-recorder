@@ -90,13 +90,24 @@ func (l *Log) Write(level, id, message string) {
 
 // WriteError keeps a readable message and a separate, bounded diagnostic cause.
 func (l *Log) WriteError(level, id, message string, cause error) {
+	l.WriteDetails(level, id, message, "", cause)
+}
+
+// WriteDetails adds context to the log file and the copyable details without
+// putting it in the main message.
+func (l *Log) WriteDetails(level, id, message, details string, cause error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sequence++
 	if len(message) > 16000 {
 		message = message[:16000] + " [truncated]"
 	}
-	details := fault.Details(cause)
+	if cause != nil {
+		if details != "" {
+			details += "\n"
+		}
+		details += fault.Details(cause)
+	}
 	if len(details) > 16000 {
 		details = details[:16000] + " [truncated]"
 	}

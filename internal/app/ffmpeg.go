@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"bigo-live-recorder/internal/ffmpeg"
 	"github.com/egoist/mygo/ui"
@@ -15,7 +16,7 @@ func (a *application) checkFFmpeg(prompt bool) {
 	a.ffmpegChecking = true
 	configured := a.cfg.FFmpegPath
 	go func() {
-		_, err := ffmpeg.Check(a.ctx, configured)
+		err := a.checkFFmpegVersion(configured)
 		a.update(func() {
 			a.ffmpegChecking = false
 			if a.cfg.FFmpegPath != configured {
@@ -36,6 +37,20 @@ func (a *application) checkFFmpeg(prompt bool) {
 	}()
 }
 
+func (a *application) checkFFmpegVersion(configured string) error {
+	started := time.Now()
+	version, err := ffmpeg.Check(a.ctx, configured)
+	if a.ctx.Err() == nil {
+		details := fmt.Sprintf("Version check took %s. Custom executable selected: %t.", time.Since(started).Round(time.Millisecond), configured != "")
+		if err == nil {
+			a.log.WriteDetails("INFO", "setup", "FFmpeg is ready", fmt.Sprintf("FFmpeg version: %q. %s", version, details), nil)
+		} else {
+			a.log.WriteDetails("WARN", "setup", "FFmpeg check failed", details, err)
+		}
+	}
+	return err
+}
+
 func (a *application) installFFmpeg() {
 	if a.ffmpegInstalling {
 		return
@@ -47,6 +62,7 @@ func (a *application) installFFmpeg() {
 	a.ffmpegProgress = "Starting download…"
 	go func() {
 		defer cancel()
+		started := time.Now()
 		installed, err := ffmpeg.Install(ctx, func(p ffmpeg.Progress) {
 			text := p.Stage
 			if p.Received > 0 {
@@ -64,6 +80,10 @@ func (a *application) installFFmpeg() {
 			err = a.store.SaveConfig(cfg)
 		}
 		canceled := ctx.Err() != nil
+		details := fmt.Sprintf("Installation ran for %s.", time.Since(started).Round(time.Millisecond))
+		if !canceled && err != nil {
+			a.log.WriteDetails("WARN", "setup", "FFmpeg setup failed", details, err)
+		}
 		a.update(func() {
 			a.ffmpegInstalling = false
 			a.ffmpegCancel = nil
@@ -80,7 +100,7 @@ func (a *application) installFFmpeg() {
 			a.ffmpeg = true
 			a.ffmpegOpen = false
 			a.toasts = append(a.toasts, "FFmpeg installed. You’re ready to record.")
-			a.log.Write("INFO", "setup", "FFmpeg installed in the per-user application directory")
+			a.log.WriteDetails("INFO", "setup", "FFmpeg installed in the per-user application directory", details, nil)
 		})
 	}()
 }

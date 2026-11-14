@@ -17,7 +17,7 @@ func TestDiagnosticDetailsSurviveRotationAndReloadSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 50 {
-		l.WriteError("WARN", "demo", "Stream setup timed out; queued to retry", fault.Wrap("waiting for playable audio", context.DeadlineExceeded))
+		l.WriteDetails("WARN", "demo", "Stream setup timed out; queued to retry", "Media source: Origin.", fault.Wrap("waiting for playable audio", context.DeadlineExceeded))
 	}
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestDiagnosticDetailsSurviveRotationAndReloadSeparately(t *testing.T) {
 		t.Fatal("lost latest failure on reload")
 	}
 	for _, entry := range entries {
-		if strings.Contains(entry.Message, "context deadline") || !strings.Contains(entry.Details, "waiting for playable audio: context deadline exceeded") {
+		if strings.Contains(entry.Message, "context deadline") || entry.Details != "Media source: Origin.\nwaiting for playable audio: context deadline exceeded" {
 			t.Fatal("readable and diagnostic text were mixed or lost", entry)
 		}
 	}

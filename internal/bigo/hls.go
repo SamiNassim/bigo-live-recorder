@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bigo-live-recorder/internal/fault"
 )
 
 const (
@@ -79,19 +81,26 @@ func openHLSStream(ctx context.Context, client *http.Client, source Stream, refe
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	initialCtx, cancelInitial := context.WithTimeout(streamCtx, 30*time.Second)
+	started := time.Now()
 	var playlist hlsPlaylist
 	var mediaURL, rootURL string
 	var err error
+	var tried int
 	for _, rootURL = range sources {
+		tried++
 		playlist, mediaURL, err = loadHLSPlaylist(initialCtx, client, rootURL, referer)
 		if err == nil {
 			break
 		}
 	}
 	cancelInitial()
+	details := fmt.Sprintf("Web HLS playlist setup took %s. Playback sources tried: %d of %d.", time.Since(started).Round(time.Millisecond), tried, len(sources))
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, fault.WithDetails(err, details)
+	}
+	if recoverPlayback {
+		recovery.Log("INFO", "Web playback connected", details, nil)
 	}
 	reader, writer := io.Pipe()
 	stream := &hlsReadCloser{PipeReader: reader, cancel: cancel, done: make(chan struct{})}
@@ -295,7 +304,11 @@ func requestHLS(ctx context.Context, client *http.Client, resourceURL, referer s
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 		if err != nil {
-			return nil, fmt.Errorf("create BIGO HLS request: %w", err)
+			var requestError *url.Error
+			if errors.As(err, &requestError) {
+				err = requestError.Err
+			}
+			return nil, fault.Wrap("could not create the BIGO HLS request", err)
 		}
 		setRequestHeaders(request, referer)
 		if playlist {
