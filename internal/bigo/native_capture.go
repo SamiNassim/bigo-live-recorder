@@ -96,10 +96,10 @@ func (c *nativeCapture) Close() error {
 func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 	defer close(c.done)
 	defer func() { session.Close() }()
-	order := &nativeMediaOrder{}
+	order := &nativeMediaOrder{recovery: c.recovery}
 	defer func() { order.close() }()
 	for {
-		frame, err := session.next(c.ctx)
+		frame, err := session.read(c.ctx)
 		if err == nil {
 			if err = order.add(frame, c.queue.push); err == nil {
 				continue
@@ -108,19 +108,35 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				c.queue.finish(err)
 				return
 			}
-			session.Close()
+		} else if c.ctx.Err() == nil && session.canRecoverAudio(err) && !order.audioTime.IsZero() {
+			if err = c.recoverAudio(source, session, order, err); err == nil {
+				continue
+			}
+			if fault.RequiresAction(err) {
+				c.queue.finish(err)
+				return
+			}
 		}
 		if c.ctx.Err() != nil {
 			c.queue.finish(c.ctx.Err())
 			return
 		}
 		reconnect := newNativeRecoveryLog(err)
+		session.Close()
+		// Keep media already received before a socket failed. Clock faults
+		// deliberately discard the rest of that session's unchecked frames.
+		if !errors.Is(err, errNativeMediaOrderClock) {
+			if pendingErr := c.drainNativeMedia(session, order); pendingErr != nil && !errors.Is(pendingErr, errNativeMediaOrderClock) {
+				c.queue.finish(pendingErr)
+				return
+			}
+		}
 		if flushErr := order.flush(nil, c.queue.push); flushErr != nil {
 			c.queue.finish(flushErr)
 			return
 		}
 		order.close()
-		order = &nativeMediaOrder{}
+		order = &nativeMediaOrder{recovery: c.recovery}
 		c.mu.Lock()
 		if c.reconnectErr != nil {
 			err = c.reconnectErr
@@ -132,7 +148,6 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			return
 		}
 		c.recovery.Log("WARN", "Origin stream interrupted. Reconnecting…", "Reopening both Origin media sockets while keeping the recording open.", err)
-		session.Close()
 		recovered := false
 		for attempt := 0; attempt < nativeRecoveryAttempts; attempt++ {
 			if c.ctx.Err() != nil {
@@ -147,7 +162,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 			}
 			reconnect.beginAttempt(attempt + 1)
 			ctx, cancel := context.WithTimeout(c.ctx, 25*time.Second)
-			fresh, refreshErr := c.recovery.Refresh(ctx)
+			fresh, refreshErr := c.refreshOrigin(ctx, source)
 			reconnect.refresh = time.Since(reconnect.attemptStarted)
 			cancel()
 			if refreshErr != nil {
@@ -217,6 +232,32 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 		}
 		c.recovery.Log("INFO", "BIGO media resumed; continuing capture", reconnect.details("restored media")+"\n"+session.setup, nil)
 	}
+}
+
+func (c *nativeCapture) drainNativeMedia(session *nativeMediaSession, order *nativeMediaOrder) error {
+	for range len(session.events) {
+		if err := order.add(<-session.events, c.queue.push); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *nativeCapture) refreshOrigin(ctx context.Context, source Stream) (Stream, error) {
+	if c.recovery.Room != nil && source.RoomID != "" && source.RoomID != "0" {
+		roomCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		fresh, err := c.recovery.Room(roomCtx, source)
+		cancel()
+		if errors.Is(err, ErrRoomEnded) {
+			return Stream{}, nil
+		}
+		if err == nil && fresh.Alive == 1 && fresh.RoomID == source.RoomID &&
+			(fresh.UID == 0 || source.UID == 0 || fresh.UID == source.UID) &&
+			(fresh.native != nil || fresh.RoomKind == RoomAudioMultiGuest || fresh.RoomKind == RoomHybridMultiGuest) {
+			return fresh, nil
+		}
+	}
+	return c.recovery.Refresh(ctx)
 }
 
 func (c *nativeCapture) reconnect(err error) {
@@ -394,7 +435,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
-	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, startWithAudio: c.guest, videoCodec: codec, timing: c.timing}
+	mux := nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, ordered: !c.guest, startWithAudio: c.guest, videoCodec: codec, timing: c.timing}
 	draining := false
 	warnedPrefix := false
 	for {
@@ -416,7 +457,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 			if !c.guest {
 				c.videoHeaders = nativeVideoHeaders{}
 			}
-			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, timing: c.timing}
+			mux = nativeTSMux{out: writer, clock: c.clock, noAudio: noAudio, opus: config[0] == 7, ordered: !c.guest, timing: c.timing}
 			draining = false
 			continue
 		}

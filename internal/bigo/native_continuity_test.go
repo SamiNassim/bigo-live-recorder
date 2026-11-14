@@ -14,6 +14,46 @@ import (
 	"bigo-live-recorder/internal/fault"
 )
 
+func TestNativeRecoveryRefreshesKnownRoomBeforeWeb(t *testing.T) {
+	source := Stream{Alive: 1, UID: 77, RoomID: "42"}
+	native := source
+	native.native = &pJoinChannelRes{}
+	web := Stream{Alive: 1, UID: 77, RoomID: "43", HLS: "https://cdn.example/live.m3u8"}
+	for _, tt := range []struct {
+		name    string
+		room    Stream
+		err     error
+		want    Stream
+		wantWeb bool
+	}{
+		{name: "same room", room: native, want: native},
+		{name: "confirmed end", err: ErrRoomEnded},
+		{name: "native lookup failed", err: context.DeadlineExceeded, want: web, wantWeb: true},
+		{name: "different room", room: Stream{Alive: 1, RoomID: "43", native: &pJoinChannelRes{}}, want: web, wantWeb: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &nativeCapture{recovery: StreamRecovery{
+				Room: func(ctx context.Context, current Stream) (Stream, error) {
+					if _, ok := ctx.Deadline(); !ok || current.RoomID != source.RoomID {
+						t.Fatal("native lookup did not use the existing room and a bounded deadline")
+					}
+					return tt.room, tt.err
+				},
+				Refresh: func(context.Context) (Stream, error) {
+					if !tt.wantWeb {
+						t.Fatal("a resolved native room triggered a web request")
+					}
+					return web, nil
+				},
+			}}
+			got, err := c.refreshOrigin(context.Background(), source)
+			if err != nil || got.RoomID != tt.want.RoomID || got.Alive != tt.want.Alive || got.native != tt.want.native {
+				t.Fatal("unexpected recovery source", got.RoomID, err)
+			}
+		})
+	}
+}
+
 func TestNativeMediaEOFIdentifiesFailedReceiver(t *testing.T) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -53,6 +93,167 @@ func TestNativeMediaEOFIdentifiesFailedReceiver(t *testing.T) {
 			!strings.Contains(details, "ago") || !strings.Contains(details, "EOF") {
 			t.Fatalf("%s disconnect lost track or transport context: %s", failed.track(), details)
 		}
+	}
+}
+
+func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	listen := func() (*net.TCPListener, mediaProxy) {
+		t.Helper()
+		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		return listener, mediaProxy{ip: 0x0100007f, tcp: []uint16{uint16(listener.Addr().(*net.TCPAddr).Port)}}
+	}
+	videoListener, videoRoute := listen()
+	audioListener, audioRoute := listen()
+	initialVideo, loseAudio, readyAudio, sendAudio, endVideo := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	wait := func(ch <-chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	accept := func(listener *net.TCPListener) net.Conn {
+		conn, err := listener.AcceptTCP()
+		if err != nil {
+			return nil
+		}
+		conn.SetDeadline(time.Now().Add(9 * time.Second))
+		if _, err = readNativePacket(conn); err != nil {
+			conn.Close()
+			return nil
+		}
+		return conn
+	}
+	go func() {
+		conn := accept(videoListener)
+		if conn == nil {
+			return
+		}
+		defer conn.Close()
+		reply := binary.LittleEndian.AppendUint32(nil, 1234)
+		reply = binary.LittleEndian.AppendUint64(reply, 0)
+		if writeNativeTestPacket(conn, 0x5a02, reply) != nil || writeNativeTestVideo(conn, nativeTestVideo(25, true)) != nil {
+			return
+		}
+		close(initialVideo)
+		if !wait(readyAudio) {
+			return
+		}
+		// Video stays on the original connection, including dependent
+		// frames during audio recovery before the next keyframe.
+		for id := uint32(26); id <= 29; id++ {
+			if writeNativeTestVideo(conn, nativeTestVideo(id, false)) != nil {
+				return
+			}
+		}
+		close(sendAudio)
+		if wait(endVideo) {
+			writeNativeTestVideo(conn, nativeTestVideo(30, true))
+		}
+	}()
+	go func() {
+		send := func(conn net.Conn, pts uint32, marker byte) error {
+			sample := nativeCaptureAudio(pts).data
+			sample[7] = marker
+			body := nativeTestAudioPacket(sample)
+			binary.LittleEndian.PutUint32(body[8:], pts)
+			return writeNativeTestPacket(conn, 2, body)
+		}
+		first := accept(audioListener)
+		if first == nil {
+			return
+		}
+		if !wait(initialVideo) {
+			first.Close()
+			return
+		}
+		ticker := time.NewTicker(10 * time.Millisecond)
+	initial:
+		for {
+			select {
+			case <-loseAudio:
+				break initial
+			case <-ctx.Done():
+				ticker.Stop()
+				first.Close()
+				return
+			case <-ticker.C:
+				if send(first, 1000, 1) != nil {
+					ticker.Stop()
+					first.Close()
+					return
+				}
+			}
+		}
+		ticker.Stop()
+		first.Close()
+		second := accept(audioListener)
+		if second == nil {
+			return
+		}
+		defer second.Close()
+		close(readyAudio)
+		if wait(sendAudio) {
+			if send(second, 1000, 2) != nil || send(second, 21000, 3) != nil || send(second, 1160, 4) != nil {
+				return
+			}
+			io.Copy(io.Discard, second)
+		}
+	}()
+	var refreshes atomic.Int32
+	resumed := make(chan struct{})
+	capture, err := newNativeCapture(ctx, Stream{Alive: 1, UID: 77, RoomID: "42",
+		native: &pJoinChannelRes{source: 1234, sid: 42, cookie: []byte("synthetic-ticket"), video: []mediaProxy{videoRoute}, media: []mediaProxy{audioRoute}}}, StreamRecovery{
+		Refresh: func(context.Context) (Stream, error) {
+			refreshes.Add(1)
+			return Stream{}, nil
+		},
+		Report: func(_, message string) {
+			if message == "Origin audio resumed" {
+				close(resumed)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(fault.Details(err))
+	}
+	defer capture.Close()
+	part, err := capture.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer part.Close()
+	close(loseAudio)
+	if !wait(resumed) || refreshes.Load() != 0 {
+		t.Fatal("audio recovery did not preserve the video connection or avoid a source refresh")
+	}
+	close(endVideo)
+	raw, err := io.ReadAll(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packets := nativeCapturePayloads(t, raw)
+	video, audio := packets[256], packets[257]
+	if len(video) != 6 || len(audio) != 2 {
+		t.Fatalf("expected six video frames and two aligned audio samples, got %d and %d", len(video), len(audio))
+	}
+	for i, frame := range video {
+		if frame[len(frame)-1] != byte(25+i) {
+			t.Fatalf("video frame %d changed", i)
+		}
+	}
+	if audio[0][7] != 1 || audio[1][7] != 4 {
+		t.Fatal("cached or out-of-epoch audio reached the recording")
+	}
+	if _, err := capture.Next(ctx); !errors.Is(err, io.EOF) || refreshes.Load() != 1 {
+		t.Fatal("capture did not end normally after the video socket closed", err, refreshes.Load())
 	}
 }
 

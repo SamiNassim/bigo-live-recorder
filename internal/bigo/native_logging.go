@@ -14,7 +14,8 @@ type nativeKeepaliveFailure struct{ err error }
 
 type nativeTrackFailure struct {
 	error
-	at time.Time
+	at   time.Time
+	conn *nativeMediaConn
 }
 
 func (e *nativeTrackFailure) Unwrap() error { return e.error }
@@ -49,7 +50,7 @@ func (c *nativeMediaConn) trackFailure(peer *nativeMediaConn, err error) error {
 		details += "\n" + fault.Details(err)
 		err = io.ErrUnexpectedEOF
 	}
-	return &nativeTrackFailure{error: fault.WithDetails(err, details), at: now}
+	return &nativeTrackFailure{error: fault.WithDetails(err, details), at: now, conn: c}
 }
 
 type nativeSetupLog struct {
