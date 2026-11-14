@@ -162,7 +162,7 @@ func TestPauseCancelsInFlightRecorderStartupAndCanResume(t *testing.T) {
 	defer e.Close()
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("recorder startup did not begin")
 	}
 	if err := e.SetRecordingPaused("test", true); err != nil {

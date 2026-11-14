@@ -23,17 +23,18 @@ const (
 
 type nativeMediaConn struct {
 	net.Conn
-	mu               sync.Mutex
-	viewer, sid      uint32
-	owner            uint32
-	video            bool
-	guest            bool
-	subscribed       bool
-	subscription     uint64
-	confirmed        bool
-	report           func(string, string)
-	availability     []byte
-	setupStarted     time.Time
+	mu           sync.Mutex
+	viewer, sid  uint32
+	owner        uint32
+	video        bool
+	guest        bool
+	subscribed   bool
+	subscription uint64
+	confirmed    bool
+	report       func(string, string)
+	availability []byte
+	setupStarted time.Time
+	// Setup-relative nanoseconds plus one. Zero means the event has not happened.
 	lastPlayable     atomic.Int64
 	confirmedAfter   atomic.Int64
 	keepaliveFailure atomic.Pointer[nativeKeepaliveFailure]
@@ -400,7 +401,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 			return nil, fault.Wrap("native stream setup failed: "+fault.Reason(err), err)
 		case f := <-events:
 			if f.video && f.key && first == nil {
-				setup.keyframe = time.Since(setup.started)
+				setup.keyframe = time.Now()
 				setup.videoCodec = f.codec
 				if _, err := nativeVideoType(f.codec); err != nil {
 					cleanup()
@@ -420,7 +421,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 						workers.Wait()
 						return nil, fault.Wrap("BIGO's native audio and video could not be synchronized at startup", fmt.Errorf("audio PTS minus first video keyframe PTS was %d ms", delta))
 					}
-					setup.audio = time.Since(setup.started)
+					setup.audio = time.Now()
 					setup.audioOffsetMS = delta
 					audioReady = true
 				}
@@ -527,13 +528,13 @@ func (c *nativeMediaConn) receive(ctx context.Context, out chan<- nativeMediaFra
 				return fault.Wrap("BIGO could not maintain the native media subscription", fmt.Errorf("native %s control message %#x: %w", track, packet.uri, err))
 			}
 			if !confirmed && c.confirmed && !c.setupStarted.IsZero() {
-				c.confirmedAfter.Store(int64(time.Since(c.setupStarted)))
+				c.confirmedAfter.Store(int64(time.Since(c.setupStarted)) + 1)
 			}
 		}
 		for _, f := range frames {
 			lastMedia = time.Now()
 			if !c.setupStarted.IsZero() {
-				c.lastPlayable.Store(int64(lastMedia.Sub(c.setupStarted)))
+				c.lastPlayable.Store(int64(lastMedia.Sub(c.setupStarted)) + 1)
 			}
 			if !f.video {
 				invalidAudio = nil

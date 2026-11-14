@@ -31,7 +31,7 @@ func (c *nativeMediaConn) track() string {
 
 func (c *nativeMediaConn) playableAge(now time.Time) string {
 	if elapsed := c.lastPlayable.Load(); elapsed > 0 {
-		return max(0, now.Sub(c.setupStarted.Add(time.Duration(elapsed)))).Round(time.Millisecond).String() + " ago"
+		return max(0, now.Sub(c.setupStarted.Add(time.Duration(elapsed-1)))).Round(time.Millisecond).String() + " ago"
 	}
 	return "none received"
 }
@@ -57,8 +57,8 @@ type nativeSetupLog struct {
 	steps         []string
 	video         *nativeMediaConn
 	videoCodec    byte
-	keyframe      time.Duration
-	audio         time.Duration
+	keyframe      time.Time
+	audio         time.Time
 	audioOffsetMS int32
 }
 
@@ -73,21 +73,21 @@ func (l *nativeSetupLog) mark(step string) {
 func (l *nativeSetupLog) details() string {
 	steps := l.steps
 	if l.video != nil {
-		if confirmed := time.Duration(l.video.confirmedAfter.Load()); confirmed > 0 {
-			steps = append(steps, fmt.Sprintf("video subscription confirmed at %s", confirmed.Round(time.Millisecond)))
+		if confirmed := l.video.confirmedAfter.Load(); confirmed > 0 {
+			steps = append(steps, fmt.Sprintf("video subscription confirmed at %s", time.Duration(confirmed-1).Round(time.Millisecond)))
 		}
 	}
-	if l.keyframe > 0 {
+	if !l.keyframe.IsZero() {
 		codec := fmt.Sprintf("native codec ID %d", l.videoCodec)
 		if streamType, _ := nativeVideoType(l.videoCodec); streamType == 0x1b {
 			codec = "H.264"
 		} else if streamType == 0x24 {
 			codec = "HEVC"
 		}
-		steps = append(steps, fmt.Sprintf("first video keyframe at %s (%s)", l.keyframe.Round(time.Millisecond), codec))
+		steps = append(steps, fmt.Sprintf("first video keyframe at %s (%s)", l.keyframe.Sub(l.started).Round(time.Millisecond), codec))
 	}
-	if l.audio > 0 {
-		steps = append(steps, fmt.Sprintf("first aligned audio at %s (audio PTS minus keyframe PTS: %d ms)", l.audio.Round(time.Millisecond), l.audioOffsetMS))
+	if !l.audio.IsZero() {
+		steps = append(steps, fmt.Sprintf("first aligned audio at %s (audio PTS minus keyframe PTS: %d ms)", l.audio.Sub(l.started).Round(time.Millisecond), l.audioOffsetMS))
 	}
 	return fmt.Sprintf("Origin media setup took %s. Milestones from setup start: %s.",
 		time.Since(l.started).Round(time.Millisecond), strings.Join(steps, ", "))

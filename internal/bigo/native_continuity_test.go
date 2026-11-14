@@ -33,7 +33,7 @@ func TestNativeMediaEOFIdentifiesFailedReceiver(t *testing.T) {
 		started := time.Now()
 		failed := &nativeMediaConn{Conn: conn, video: video, setupStarted: started}
 		peer := &nativeMediaConn{video: !video, setupStarted: started}
-		peer.lastPlayable.Store(int64(time.Since(started)))
+		peer.lastPlayable.Store(1) // The peer delivered media in the setup clock tick.
 		errs := make(chan error, 1)
 		go func() {
 			errs <- failed.trackFailure(peer, failed.receive(context.Background(), nil))
