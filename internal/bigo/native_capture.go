@@ -13,6 +13,7 @@ import (
 
 const nativeRecoveryAttempts = 3
 const nativeRecoveryDelay = 5 * time.Second
+const nativeRoomRefreshTimeout = 3 * time.Second
 
 type nativeCapture struct {
 	ctx               context.Context
@@ -100,6 +101,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 	defer func() { order.close() }()
 	for {
 		frame, err := session.read(c.ctx)
+		audioRecoveryFailed := false
 		if err == nil {
 			if err = order.add(frame, c.queue.push); err == nil {
 				continue
@@ -109,9 +111,10 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 				return
 			}
 		} else if c.ctx.Err() == nil && session.canRecoverAudio(err) && !order.audioTime.IsZero() {
-			if err = c.recoverAudio(source, session, order, err); err == nil {
+			if err = c.recoverAudio(&source, session, order, err); err == nil {
 				continue
 			}
+			audioRecoveryFailed = true
 			if fault.RequiresAction(err) {
 				c.queue.finish(err)
 				return
@@ -126,7 +129,7 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 		// Keep media already received before a socket failed. Clock faults
 		// deliberately discard the rest of that session's unchecked frames.
 		if !errors.Is(err, errNativeMediaOrderClock) {
-			if pendingErr := c.drainNativeMedia(session, order); pendingErr != nil && !errors.Is(pendingErr, errNativeMediaOrderClock) {
+			if pendingErr := c.drainNativeMedia(session, order, !audioRecoveryFailed); pendingErr != nil && !errors.Is(pendingErr, errNativeMediaOrderClock) {
 				c.queue.finish(pendingErr)
 				return
 			}
@@ -234,10 +237,13 @@ func (c *nativeCapture) receive(source Stream, session *nativeMediaSession) {
 	}
 }
 
-func (c *nativeCapture) drainNativeMedia(session *nativeMediaSession, order *nativeMediaOrder) error {
+func (c *nativeCapture) drainNativeMedia(session *nativeMediaSession, order *nativeMediaOrder, keepAudio bool) error {
 	for range len(session.events) {
-		if err := order.add(<-session.events, c.queue.push); err != nil {
-			return err
+		frame := <-session.events
+		if frame.video || keepAudio {
+			if err := order.add(frame, c.queue.push); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -245,7 +251,7 @@ func (c *nativeCapture) drainNativeMedia(session *nativeMediaSession, order *nat
 
 func (c *nativeCapture) refreshOrigin(ctx context.Context, source Stream) (Stream, error) {
 	if c.recovery.Room != nil && source.RoomID != "" && source.RoomID != "0" {
-		roomCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		roomCtx, cancel := context.WithTimeout(ctx, nativeRoomRefreshTimeout)
 		fresh, err := c.recovery.Room(roomCtx, source)
 		cancel()
 		if errors.Is(err, ErrRoomEnded) {

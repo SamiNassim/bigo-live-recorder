@@ -1,6 +1,7 @@
 package bigo
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -97,6 +98,19 @@ func TestNativeMediaEOFIdentifiesFailedReceiver(t *testing.T) {
 }
 
 func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refresh bool
+	}{
+		{name: "existing route"},
+		{name: "replacement EOF then fresh route", refresh: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testNativeAudioRecovery(t, tc.refresh) })
+	}
+}
+
+func testNativeAudioRecovery(t *testing.T, refresh bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	listen := func() (*net.TCPListener, mediaProxy) {
@@ -110,6 +124,11 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 	}
 	videoListener, videoRoute := listen()
 	audioListener, audioRoute := listen()
+	var freshAudio *net.TCPListener
+	var freshRoute mediaProxy
+	if refresh {
+		freshAudio, freshRoute = listen()
+	}
 	initialVideo, loseAudio, readyAudio, sendAudio, endVideo := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	wait := func(ch <-chan struct{}) bool {
 		select {
@@ -119,20 +138,21 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 			return false
 		}
 	}
-	accept := func(listener *net.TCPListener) net.Conn {
+	accept := func(listener *net.TCPListener, ticket string) net.Conn {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
 			return nil
 		}
 		conn.SetDeadline(time.Now().Add(9 * time.Second))
-		if _, err = readNativePacket(conn); err != nil {
+		login, err := readNativePacket(conn)
+		if err != nil || !bytes.Contains(login.data, []byte(ticket)) {
 			conn.Close()
 			return nil
 		}
 		return conn
 	}
 	go func() {
-		conn := accept(videoListener)
+		conn := accept(videoListener, "synthetic-ticket")
 		if conn == nil {
 			return
 		}
@@ -166,7 +186,7 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 			binary.LittleEndian.PutUint32(body[8:], pts)
 			return writeNativeTestPacket(conn, 2, body)
 		}
-		first := accept(audioListener)
+		first := accept(audioListener, "synthetic-ticket")
 		if first == nil {
 			return
 		}
@@ -194,9 +214,16 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 		}
 		ticker.Stop()
 		first.Close()
-		second := accept(audioListener)
+		second := accept(audioListener, "synthetic-ticket")
 		if second == nil {
 			return
+		}
+		if refresh {
+			second.Close()
+			second = accept(freshAudio, "synthetic-fresh-ticket")
+			if second == nil {
+				return
+			}
 		}
 		defer second.Close()
 		close(readyAudio)
@@ -207,13 +234,24 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 			io.Copy(io.Discard, second)
 		}
 	}()
-	var refreshes atomic.Int32
+	var refreshes, roomLookups atomic.Int32
 	resumed := make(chan struct{})
 	capture, err := newNativeCapture(ctx, Stream{Alive: 1, UID: 77, RoomID: "42",
 		native: &pJoinChannelRes{source: 1234, sid: 42, cookie: []byte("synthetic-ticket"), video: []mediaProxy{videoRoute}, media: []mediaProxy{audioRoute}}}, StreamRecovery{
 		Refresh: func(context.Context) (Stream, error) {
 			refreshes.Add(1)
 			return Stream{}, nil
+		},
+		Room: func(ctx context.Context, source Stream) (Stream, error) {
+			if !refresh || roomLookups.Add(1) != 1 {
+				return Stream{}, ErrRoomEnded
+			}
+			// The refreshed route and login must both come from the listener.
+			channel := *source.native
+			channel.cookie = []byte("synthetic-fresh-ticket")
+			channel.media = []mediaProxy{freshRoute}
+			source.native = &channel
+			return source, ctx.Err()
 		},
 		Report: func(_, message string) {
 			if message == "Origin audio resumed" {
@@ -231,8 +269,8 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 	}
 	defer part.Close()
 	close(loseAudio)
-	if !wait(resumed) || refreshes.Load() != 0 {
-		t.Fatal("audio recovery did not preserve the video connection or avoid a source refresh")
+	if !wait(resumed) || refreshes.Load() != 0 || (roomLookups.Load() == 1) != refresh {
+		t.Fatal("audio recovery did not preserve video on the expected route", refreshes.Load(), roomLookups.Load())
 	}
 	close(endVideo)
 	raw, err := io.ReadAll(part)
@@ -252,7 +290,7 @@ func TestNativeAudioEOFRecoversWhileRecordingVideo(t *testing.T) {
 	if audio[0][7] != 1 || audio[1][7] != 4 {
 		t.Fatal("cached or out-of-epoch audio reached the recording")
 	}
-	if _, err := capture.Next(ctx); !errors.Is(err, io.EOF) || refreshes.Load() != 1 {
+	if _, err := capture.Next(ctx); !errors.Is(err, io.EOF) || refreshes.Load() != 0 {
 		t.Fatal("capture did not end normally after the video socket closed", err, refreshes.Load())
 	}
 }

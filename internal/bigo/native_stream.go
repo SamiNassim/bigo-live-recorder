@@ -311,6 +311,9 @@ func (s *nativeMediaSession) read(ctx context.Context) (nativeMediaFrame, error)
 		if err == nil {
 			err = io.EOF
 		}
+		if !s.currentTrackFailure(err) {
+			return s.read(ctx)
+		}
 		return nativeMediaFrame{}, err
 	case <-ctx.Done():
 		return nativeMediaFrame{}, ctx.Err()
@@ -319,12 +322,22 @@ func (s *nativeMediaSession) read(ctx context.Context) (nativeMediaFrame, error)
 	}
 }
 
-func (s *nativeMediaSession) startTrack(conn *nativeMediaConn, channel *pJoinChannelRes) bool {
+func (s *nativeMediaSession) currentTrackFailure(err error) bool {
+	var failed *nativeTrackFailure
+	if !errors.As(err, &failed) || failed.conn == nil || failed.conn.video {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return failed.conn == s.audio
+}
+
+func (s *nativeMediaSession) startTrack(conn *nativeMediaConn, channel *pJoinChannelRes) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.ctx.Err() != nil {
 		conn.Close()
-		return false
+		return nil
 	}
 	if !conn.video {
 		s.audio = conn
@@ -332,7 +345,9 @@ func (s *nativeMediaSession) startTrack(conn *nativeMediaConn, channel *pJoinCha
 	conn.mediaEpoch = s.video.setupStarted
 	ctx, cancel := context.WithCancel(s.ctx)
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	done := make(chan struct{})
 	s.workers.Go(func() {
+		defer close(done)
 		defer cancel()
 		defer stop()
 		defer conn.Close()
@@ -349,7 +364,10 @@ func (s *nativeMediaSession) startTrack(conn *nativeMediaConn, channel *pJoinCha
 		}
 	})
 	s.workers.Go(func() { conn.keepalive(ctx, channel) })
-	return true
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (c *nativeMediaConn) keepalive(ctx context.Context, channel *pJoinChannelRes) {
@@ -435,7 +453,7 @@ func openNativeMediaSession(parent context.Context, source Stream, report func(s
 		}
 	}()
 	for _, conn := range []*nativeMediaConn{video, audio} {
-		if !s.startTrack(conn, channel) {
+		if s.startTrack(conn, channel) == nil {
 			video.Close()
 			audio.Close()
 			return nil, ctx.Err()
