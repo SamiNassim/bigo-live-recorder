@@ -120,6 +120,7 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	}
 	e.wg.Add(1)
 	go e.run()
+	e.wg.Go(e.retryRecordingHistory)
 	e.resumeReplays()
 	return e
 }
@@ -480,6 +481,23 @@ func (e *Engine) Close() {
 		e.hub.Close()
 	}
 	e.wg.Wait()
+	if err := e.store.FlushRecordingHistory(); err != nil {
+		e.log.WriteError("ERROR", "storage", "Could not save recording history before quitting. Check available disk space and folder permissions.", err)
+	}
+}
+
+func (e *Engine) retryRecordingHistory() {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-tick.C:
+			// The original failure is logged when recording history changes.
+			_ = e.store.FlushRecordingHistory()
+		}
+	}
 }
 
 func (e *Engine) run() {
@@ -936,7 +954,7 @@ func (e *Engine) check(id string) {
 		return
 	}
 	it.row.Streamer.LastRecordedAt = firstStarted
-	e.persist(func(d *state.Data) {
+	e.persistHistory(func(d *state.Data) {
 		if broadcast.Segmented {
 			if i := slices.IndexFunc(d.Broadcasts, func(b state.Broadcast) bool { return b.ID == broadcast.ID }); i >= 0 {
 				d.Broadcasts[i].EndedAt = time.Time{}
@@ -968,7 +986,7 @@ func (e *Engine) completed(it *item) {
 	e.fileChanges(it)
 	r := it.handle.Result()
 	alreadyFinalized := slices.ContainsFunc(e.store.Data().Recordings, func(saved state.Recording) bool { return saved.Path == r.Path && !saved.EndedAt.IsZero() })
-	e.persist(func(d *state.Data) {
+	e.persistHistory(func(d *state.Data) {
 		finishBroadcastFile(d, r.Path, r)
 		if it.segmented {
 			for i := range d.Broadcasts {
@@ -1035,7 +1053,7 @@ func (e *Engine) fileChanges(it *item) {
 		return
 	}
 	id := it.row.Streamer.ID
-	e.persist(func(d *state.Data) {
+	e.persistHistory(func(d *state.Data) {
 		for _, change := range changes {
 			if change.Result != nil {
 				finishBroadcastFile(d, change.Path, *change.Result)
@@ -1109,12 +1127,18 @@ func (e *Engine) persist(change func(*state.Data)) {
 	}
 }
 
+func (e *Engine) persistHistory(change func(*state.Data)) {
+	if err := e.store.UpdateRecordingHistory(change); err != nil {
+		e.log.WriteError("ERROR", "storage", "Could not save recording history: "+fault.Reason(err)+". The app will retry. Check available disk space and folder permissions.", err)
+	}
+}
+
 func (e *Engine) recoverHistory() {
 	data := e.store.Data()
 	if !slices.ContainsFunc(data.Recordings, func(r state.Recording) bool { return r.EndedAt.IsZero() }) {
 		return
 	}
-	e.persist(func(d *state.Data) {
+	e.persistHistory(func(d *state.Data) {
 		recovered := make(map[string]time.Time)
 		for i := range d.Recordings {
 			r := &d.Recordings[i]

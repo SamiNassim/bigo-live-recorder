@@ -175,6 +175,7 @@ type Store struct {
 	config       Config
 	data         Data
 	dataRevision uint64
+	historyDirty bool
 }
 
 func Open(dir string) (*Store, error) {
@@ -308,6 +309,31 @@ func (s *Store) SaveWindow(w Window) error {
 	return nil
 }
 func (s *Store) Update(fn func(*Data) error) error {
+	return s.update(fn, false)
+}
+
+// UpdateRecordingHistory applies recorder events even when the snapshot cannot
+// be saved. The error reports a delayed save; the event has already happened.
+func (s *Store) UpdateRecordingHistory(change func(*Data)) error {
+	return s.update(func(d *Data) error { change(d); return nil }, true)
+}
+
+// FlushRecordingHistory retries a delayed save without changing the visible
+// snapshot. Any successful data update also saves pending history.
+func (s *Store) FlushRecordingHistory() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.historyDirty {
+		return nil
+	}
+	if err := writeJSON(filepath.Join(s.dir, "data.json"), s.data); err != nil {
+		return err
+	}
+	s.historyDirty = false
+	return nil
+}
+
+func (s *Store) update(fn func(*Data) error, keepOnWriteError bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := clone(s.data)
@@ -328,12 +354,14 @@ func (s *Store) Update(fn func(*Data) error) error {
 		}
 		next.Broadcasts = kept
 	}
-	if err := writeJSON(filepath.Join(s.dir, "data.json"), next); err != nil {
+	err := writeJSON(filepath.Join(s.dir, "data.json"), next)
+	if err != nil && !keepOnWriteError {
 		return err
 	}
 	s.data = next
 	s.dataRevision++
-	return nil
+	s.historyDirty = err != nil
+	return err
 }
 
 func writeJSON(name string, v any) error {
