@@ -341,9 +341,13 @@ func (a *application) updates() {
 			return
 		case <-maintenance.C:
 			if !a.preview {
-				if _, err := a.store.PruneMissingRecordings(); err != nil {
+				_, err := a.store.PruneMissingRecordings()
+				if err == nil && a.engine != nil {
+					err = a.engine.PruneMissingBroadcasts()
+				}
+				if err != nil {
 					if detail := fault.Details(err); detail != maintenanceError {
-						a.log.WriteError("WARN", "recordings", "Could not refresh recording history after checking for deleted files: "+fault.Reason(err)+". The history list may be out of date; the app will retry automatically.", err)
+						a.log.WriteError("WARN", "recordings", "Could not save recording history cleanup: "+fault.Reason(err)+". The app will retry automatically.", err)
 						maintenanceError = detail
 					}
 				} else {

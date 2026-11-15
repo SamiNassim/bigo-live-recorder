@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"bigo-live-recorder/internal/bigo"
@@ -18,6 +19,22 @@ import (
 
 type guestProfileClient interface {
 	Profile(context.Context, uint32, *bigolistener.Hub) (bigo.Profile, error)
+}
+
+// PruneMissingBroadcasts forgets orphaned rooms once their output is gone.
+func (e *Engine) PruneMissingBroadcasts() error {
+	missing := e.store.MissingBroadcasts()
+	if len(missing) == 0 {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// A capture can use the saved room identity before it writes its first file.
+	missing = slices.DeleteFunc(missing, func(b state.Broadcast) bool {
+		it := e.items[b.StreamerID]
+		return it != nil && (it.handle != nil || it.recordCancel != nil)
+	})
+	return e.store.RemoveMissingBroadcasts(missing)
 }
 
 func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (recording.Options, error) {

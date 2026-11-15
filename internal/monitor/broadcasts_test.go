@@ -3,6 +3,9 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +28,68 @@ type broadcastRecording struct {
 }
 
 func (h *broadcastRecording) Broadcast() state.Broadcast { return h.broadcast }
+
+func TestPruneMissingBroadcastsPreservesHistoryAndCaptures(t *testing.T) {
+	store, _ := fixture(t, false, false)
+	cfg := store.Config()
+	cfg.RecordingPath = t.TempDir()
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	missing := func(id string) state.Broadcast {
+		return state.Broadcast{ID: id, StreamerID: "removed.example",
+			Directory: filepath.Join(cfg.RecordingPath, "streamer", id), StartedAt: time.Now().Add(-time.Hour)}
+	}
+	open := missing("open")
+	open.ReplayPath = filepath.Join(open.Directory, "missing-replay.mkv")
+	ended := missing("ended")
+	ended.StreamerID, ended.EndedAt = "test", time.Now()
+	linked, pending := missing("linked"), missing("pending")
+	pending.ReplayPending = true
+	capturing, starting := missing("capturing"), missing("starting")
+	capturing.StreamerID, starting.StreamerID = "capturing.example", "starting.example"
+	detached := missing("detached")
+	detached.Directory = filepath.Join(t.TempDir(), "unmounted", "room")
+	original, replay := missing("original"), missing("replay")
+	if err := os.MkdirAll(original.Directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	replay.ReplayPath = filepath.Join(cfg.RecordingPath, "saved-replay.mkv")
+	if err := os.WriteFile(replay.ReplayPath, []byte("fixture replay"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	kept := []state.Broadcast{linked, pending, capturing, starting, detached, original, replay}
+	if err := store.Update(func(d *state.Data) error {
+		d.Broadcasts = append([]state.Broadcast{open, ended}, kept...)
+		d.Recordings = []state.Recording{{ID: "clip", Path: filepath.Join(linked.Directory, "clip.mkv"), BroadcastID: linked.ID}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	e := &Engine{store: store, items: map[string]*item{
+		capturing.StreamerID: {handle: &fakeRecording{}},
+		starting.StreamerID:  {recordCancel: cancel},
+	}}
+	if err := e.PruneMissingBroadcasts(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := state.Open(store.Directory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := reopened.Data()
+	if len(saved.Broadcasts) != len(kept) || !slices.EqualFunc(saved.Broadcasts, kept, func(a, b state.Broadcast) bool { return a.ID == b.ID }) {
+		t.Fatalf("cleanup kept the wrong broadcasts: %+v", saved.Broadcasts)
+	}
+	if len(saved.Recordings) != 1 || saved.Recordings[0].BroadcastID != linked.ID {
+		t.Fatal("cleanup changed linked recording history")
+	}
+	if data, err := os.ReadFile(replay.ReplayPath); err != nil || string(data) != "fixture replay" {
+		t.Fatalf("cleanup changed a saved replay: %q, %v", data, err)
+	}
+}
 
 func TestGuestRoomDurationUsesBroadcastStartAcrossFileChanges(t *testing.T) {
 	for _, kind := range []bigo.RoomKind{bigo.RoomAudioMultiGuest, bigo.RoomHybridMultiGuest} {
