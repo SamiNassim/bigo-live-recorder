@@ -85,7 +85,7 @@ func TestRecordingGroupsSeparateBroadcastsAndKeepReplayOutOfSourceTotals(t *test
 		t.Fatal("broadcasts were split by segment or conflated by host", tree.roots)
 	}
 	g := tree.groups[b.ID]
-	if g.files != 3 || g.guests != 2 || g.bytes != 600 || g.active || !g.started.Equal(start) || !g.ended.Equal(start.Add(5*time.Minute)) {
+	if g.files != 3 || g.guests != 2 || g.bytes != 600 || g.active || !g.started.Equal(start.Add(time.Minute)) || !g.ended.Equal(start.Add(5*time.Minute)) {
 		t.Fatal("derived replay inflated capture totals or duration", g)
 	}
 	wantChildren := []recordingKey{{ID: "replay:" + b.ID}, {ID: "video"}, {ID: "audio"}, {ID: "guest-two"}}
@@ -95,6 +95,49 @@ func TestRecordingGroupsSeparateBroadcastsAndKeepReplayOutOfSourceTotals(t *test
 	replayStart, replayEnd := tree.replaySpan(b.ID)
 	if !replayStart.Equal(start.Add(time.Minute)) || !replayEnd.Equal(g.ended) {
 		t.Fatal("replay duration used export completion time", replayStart, replayEnd)
+	}
+}
+
+func TestMultiGuestRecordingDurationUsesCapturedFiles(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active_%t", active), func(t *testing.T) {
+			a := accountFixture(t)
+			a.page = "recordings"
+			tt := ui.NewTester(a.view, 1400, 900)
+			start := tt.Now().Add(-45 * time.Minute)
+			b := state.Broadcast{ID: "fixture-room", StreamerID: "host.example", StartedAt: start.Add(-21 * 24 * time.Hour), ReplayPath: "replay.mkv"}
+			end := start.Add(30 * time.Minute)
+			if active {
+				end = time.Time{}
+			} else {
+				b.EndedAt = start.Add(7 * 24 * time.Hour)
+			}
+			a.data.Broadcasts = []state.Broadcast{b}
+			a.data.Recordings = []state.Recording{
+				{ID: "video", BroadcastID: b.ID, StartedAt: start, EndedAt: start.Add(15 * time.Minute)},
+				{ID: "audio", BroadcastID: b.ID, StartedAt: start.Add(10 * time.Minute), EndedAt: end},
+				{ID: "replay:" + b.ID, BroadcastID: b.ID, Path: b.ReplayPath, StartedAt: b.StartedAt, EndedAt: start.Add(14 * 24 * time.Hour)},
+			}
+			tt.Frame()
+			if g := a.recordTree.groups[b.ID]; !g.started.Equal(start) || g.active != active {
+				t.Fatal("group did not use the original guest files", g)
+			}
+			want := "30m 00s"
+			if active {
+				want = "45m 00s"
+			}
+			if a.recordList.Rows() != 1 || !tt.HasText(want) {
+				t.Fatal("group duration included time outside the capture", tt.Texts())
+			}
+			tt.Advance(time.Minute)
+			tt.Frame()
+			if active {
+				want = "46m 00s"
+			}
+			if !tt.HasText(want) {
+				t.Fatal("group duration did not reflect its recording state", tt.Texts())
+			}
+		})
 	}
 }
 

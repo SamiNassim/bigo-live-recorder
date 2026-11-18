@@ -111,7 +111,9 @@ func buildRecordingTree(records []state.Recording, broadcasts []state.Broadcast)
 		tree.groups[r.BroadcastID] = g
 	}
 	for id, g := range tree.groups {
-		if !g.broadcast.StartedAt.IsZero() {
+		// A multi-guest room can outlive its saved recordings. Keep its
+		// displayed start on the first remaining capture, not the room's age.
+		if g.broadcast.Segmented && !g.broadcast.StartedAt.IsZero() {
 			g.started = g.broadcast.StartedAt
 		}
 		if g.broadcast.Segmented && g.broadcast.EndedAt.After(g.ended) {
