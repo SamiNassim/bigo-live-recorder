@@ -21,6 +21,7 @@ func (a *application) streamers(c *ui.Context) {
 			a.addOpen = true
 		}
 	})
+	a.streamerStartup(c)
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 		ui.Row(c).Padding(16).Gap(10).Wrap().AlignItems(ui.Center).FillWidth().Children(func() {
 			ui.SearchField(c, &a.query).Placeholder("Search streamers…").Label("Search streamers").Grow(1).MinWidth(140).Height(34)

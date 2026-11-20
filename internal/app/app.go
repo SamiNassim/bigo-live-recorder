@@ -61,6 +61,8 @@ type application struct {
 	query, status, priority, order string
 	logQuery, level                string
 	streamList, logList            ui.ListState
+	startupProgressShown           bool
+	startupReadyUntil              time.Time
 	recordList                     ui.OutlineState[recordingKey]
 	recordSelection                int
 	settingsScroll                 ui.ScrollState

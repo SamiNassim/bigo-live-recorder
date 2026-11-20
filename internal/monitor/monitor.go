@@ -28,14 +28,22 @@ type Row struct {
 	LastCheck, NextCheck, StartedAt time.Time
 	Path                            string
 	Live                            bool
+	Startup                         bool
 	LiveCheckedAt                   time.Time
 	RoomKind                        bigo.RoomKind
 }
 type Snapshot struct {
 	Rows                                         []Row
 	Listener                                     bigolistener.RuntimeStatus
+	InitialChecks                                CheckProgress
 	Recording, MonitoringPaused, RecordingPaused int
 	QueueTargets                                 int
+}
+
+// CheckProgress counts first checks for monitors active at application launch.
+// Failed attempts count as checked, including while a bounded retry is pending.
+type CheckProgress struct {
+	Completed, Total int
 }
 type Event struct{ Name, StreamerID, Path string }
 
@@ -91,6 +99,7 @@ type Engine struct {
 	cancel              context.CancelFunc
 	mu                  sync.Mutex
 	items               map[string]*item
+	startupTargets      map[string]bool
 	wake                chan struct{}
 	events              chan Event
 	wg                  sync.WaitGroup
@@ -112,6 +121,12 @@ func newEngine(store *state.Store, log *logging.Log, client streamClient, start 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{store: store, log: log, client: client, start: start, ctx: ctx, cancel: cancel, items: make(map[string]*item), wake: make(chan struct{}, 1), events: make(chan Event, 64), processing: make(chan struct{}, 2), process: recording.Process,
 		replayJobs: make(map[string]bool), replaySlot: make(chan struct{}, 1), replay: recording.Replay}
+	e.startupTargets = make(map[string]bool)
+	for _, streamer := range store.Data().Streamers {
+		if !streamer.Paused {
+			e.startupTargets[streamer.ID] = true
+		}
+	}
 	e.recoverHistory()
 	e.hub = bigolistener.NewHub(ctx, e.messagingSession, func(s string) { log.Write("INFO", "listener", s) }, func(s string) { log.Write("WARN", "listener", s) }, func(s string, err error) { log.WriteError("WARN", "listener", s, err) })
 	e.configure(store.Config())
@@ -434,6 +449,12 @@ func (e *Engine) snapshot(previous *Snapshot) (Snapshot, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, it := range e.items {
+		if it.row.Startup && !it.row.Streamer.Paused {
+			s.InitialChecks.Total++
+			if !it.row.LastCheck.IsZero() {
+				s.InitialChecks.Completed++
+			}
+		}
 		if it.handle != nil && it.row.Status == "Recording" {
 			s.Recording++
 		}
@@ -455,6 +476,7 @@ func (e *Engine) snapshot(previous *Snapshot) (Snapshot, bool) {
 		}
 	}
 	if previous != nil && s.Listener == previous.Listener &&
+		s.InitialChecks == previous.InitialChecks &&
 		s.Recording == previous.Recording && s.QueueTargets == previous.QueueTargets &&
 		s.MonitoringPaused == previous.MonitoringPaused && s.RecordingPaused == previous.RecordingPaused &&
 		len(previous.Rows) == len(e.items) {
@@ -556,7 +578,7 @@ func (e *Engine) reconcile() {
 		seen[s.ID] = true
 		it := e.items[s.ID]
 		if it == nil {
-			it = &item{row: Row{Status: "Waiting", NextCheck: time.Now()}}
+			it = &item{row: Row{Status: "Waiting", NextCheck: time.Now(), Startup: e.startupTargets[s.ID]}}
 			e.items[s.ID] = it
 		}
 		it.row.Streamer = s
@@ -569,6 +591,8 @@ func (e *Engine) reconcile() {
 			}
 		}
 		if s.Paused {
+			it.row.Startup = false
+			delete(e.startupTargets, s.ID)
 			if it.handle != nil {
 				stopRecording(it)
 			} else {
@@ -608,6 +632,7 @@ func (e *Engine) reconcile() {
 	}
 	for id, it := range e.items {
 		if !seen[id] {
+			delete(e.startupTargets, id)
 			if it.handle == nil && it.recordCancel != nil {
 				it.recordCancel()
 			}
