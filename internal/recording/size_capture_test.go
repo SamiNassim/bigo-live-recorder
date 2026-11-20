@@ -27,7 +27,8 @@ func TestWebFileSizeSplitsKeepEveryFrameAndAudioPacket(t *testing.T) {
 	if err != nil {
 		t.Skip("FFmpeg is not installed")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	// Include source generation, paced input, and draining every live muxer.
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	source := filepath.Join(t.TempDir(), "source.ts")
 	generate := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x96:r=5:d=40",
