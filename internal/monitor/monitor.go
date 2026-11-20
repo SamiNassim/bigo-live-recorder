@@ -17,6 +17,7 @@ import (
 	"bigo-live-recorder/internal/bigolistener"
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/logging"
+	"bigo-live-recorder/internal/network"
 	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 )
@@ -271,8 +272,16 @@ func (e *Engine) wakeUp() {
 	}
 }
 func (e *Engine) configure(c state.Config) {
+	route, err := network.New(c.Proxy)
+	if err != nil {
+		e.log.WriteError("ERROR", "settings", "Proxy configuration is invalid", err)
+		return
+	}
+	if client, ok := e.client.(interface{ SetRoute(*network.Route) }); ok {
+		client.SetRoute(route)
+	}
 	e.client.Configure(c.Cookie, time.Duration(c.RequestDelaySeconds)*time.Second)
-	e.hub.Configure(c.NativeListening, c.Cookie, c.NativeDeviceID)
+	e.hub.Configure(c.NativeListening, c.Cookie, c.NativeDeviceID, route)
 }
 
 func (e *Engine) messagingSession(ctx context.Context, deviceID string) (bigolistener.Session, error) {
@@ -287,6 +296,7 @@ func (e *Engine) messagingSession(ctx context.Context, deviceID string) (bigolis
 }
 
 func (e *Engine) SaveConfig(c state.Config) error {
+	previousProxy := e.store.Config().Proxy
 	var err error
 	c.Cookie, err = bigo.ParseCookie(c.Cookie)
 	if err != nil {
@@ -303,6 +313,13 @@ func (e *Engine) SaveConfig(c state.Config) error {
 	e.configure(c)
 	e.mu.Lock()
 	for _, it := range e.items {
+		if previousProxy != c.Proxy && it.recordCancel != nil {
+			it.recordCancel()
+			if it.handle != nil {
+				it.handle.Stop()
+				it.row.Status = "Finalizing"
+			}
+		}
 		it.initial = false
 		it.bootstrapFailures = 0
 		it.retryUntil = time.Time{}
@@ -999,7 +1016,7 @@ func (e *Engine) check(id string) {
 	})
 	current = e.store.Data()
 	at = slices.IndexFunc(current.Streamers, func(s state.Streamer) bool { return s.ID == id })
-	if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil {
+	if at < 0 || current.Streamers[at].Paused || current.Streamers[at].RecordingPaused || recordCtx.Err() != nil || e.store.Config().Proxy != cfg.Proxy {
 		h.Stop()
 		it.row.Status = "Finalizing"
 		return

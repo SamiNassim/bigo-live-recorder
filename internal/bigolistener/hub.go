@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/fault"
+	"bigo-live-recorder/internal/network"
 )
 
 const (
@@ -64,6 +65,7 @@ type hubSnapshot struct {
 	version   uint64
 	configKey string
 	deviceID  string
+	route     *network.Route
 	targets   []target
 }
 
@@ -92,6 +94,7 @@ type Hub struct {
 	usable           bool
 	configKey        string
 	deviceID         string
+	route            *network.Route
 	source           SessionSource
 	watchers         map[uint64]*watcher
 	nextWatcher      uint64
@@ -208,8 +211,12 @@ var ErrNoConnection = errors.New("BIGO Linkd connection is not established")
 // Configure applies the current preference and cookie identity. It returns
 // true when native listening is selected, even if the cookie is not currently
 // usable. Native mode never silently falls back to API polling.
-func (h *Hub) Configure(enabled bool, cookie, deviceID string) bool {
-	hash := sha256.Sum256([]byte(cookie + "\x00" + deviceID))
+func (h *Hub) Configure(enabled bool, cookie, deviceID string, routes ...*network.Route) bool {
+	var route *network.Route
+	if len(routes) > 0 {
+		route = routes[0]
+	}
+	hash := sha256.Sum256([]byte(cookie + "\x00" + deviceID + "\x00" + route.Key()))
 	key := fmt.Sprintf("%t:%x", enabled, hash)
 
 	h.mu.Lock()
@@ -240,6 +247,7 @@ func (h *Hub) Configure(enabled bool, cookie, deviceID string) bool {
 	h.enabled = enabled
 	h.usable = err == nil
 	h.deviceID = deviceID
+	h.route = route
 	h.version++
 	switch {
 	case !enabled:
@@ -365,7 +373,7 @@ func (h *Hub) snapshot() (hubSnapshot, bool) {
 		targets = append(targets, target{publicID: publicID, uid: uid})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].uid < targets[j].uid })
-	return hubSnapshot{version: h.version, configKey: h.configKey, deviceID: h.deviceID, targets: targets}, true
+	return hubSnapshot{version: h.version, configKey: h.configKey, deviceID: h.deviceID, route: h.route, targets: targets}, true
 }
 
 func (h *Hub) run() {
@@ -489,6 +497,9 @@ func (h *Hub) connectAndListen(
 	subscribed map[uint32]bool,
 	rejected map[uint32]targetRejection,
 ) error {
+	if snapshot.route != nil {
+		ctx = network.WithRoute(ctx, snapshot.route)
+	}
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(ctx, hubBootstrapTimeout)
 	session, err := h.source(bootstrapCtx, snapshot.deviceID)
 	cancelBootstrap()

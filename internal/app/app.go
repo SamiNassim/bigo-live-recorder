@@ -20,6 +20,7 @@ import (
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/logging"
 	"bigo-live-recorder/internal/monitor"
+	"bigo-live-recorder/internal/network"
 	"bigo-live-recorder/internal/recording"
 	"bigo-live-recorder/internal/state"
 	"github.com/egoist/mygo"
@@ -494,6 +495,7 @@ func (a *application) validateCookie() {
 		return
 	}
 	raw := a.cfg.Cookie
+	proxy := a.cfg.Proxy
 	a.cookieLastChecked = raw
 	cookie, err := bigo.ParseCookie(raw)
 	a.account = nil
@@ -506,18 +508,27 @@ func (a *application) validateCookie() {
 		}
 		return
 	}
+	route, err := network.New(proxy)
+	if err != nil {
+		a.accountError = err
+		a.accountMessage = err.Error()
+		return
+	}
 	a.validating = true
 	a.accountMessage = "Validating account…"
 	go func() {
+		defer route.CloseIdleConnections()
 		client := bigo.NewClient()
+		client.SetRoute(route)
 		client.Configure(cookie, time.Second)
 		ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 		defer cancel()
 		account, err := client.Account(ctx)
 		a.update(func() {
 			a.validating = false
-			if a.cfg.Cookie != raw {
-				a.accountMessage = "Cookie changed; validate again."
+			if a.cfg.Cookie != raw || a.cfg.Proxy != proxy {
+				a.accountMessage = "Connection settings changed; validate again."
+				a.cookieLastChecked = ""
 				return
 			}
 			if err != nil {

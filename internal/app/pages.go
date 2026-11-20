@@ -382,6 +382,7 @@ func (a *application) settings(c *ui.Context) {
 		if a.accountSettingsRequested {
 			accountSection.ScrollIntoView()
 		}
+		a.proxySettings(c)
 		a.pollingQueue(c)
 		section(c, "Recording", "The original audio and video are copied, not re-encoded. Short MKV clusters limit damage if the process crashes.", func() {
 			ui.Row(c).FillWidth().Gap(10).Children(func() {

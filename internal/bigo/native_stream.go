@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/fault"
+	"bigo-live-recorder/internal/network"
 )
 
 const (
@@ -50,7 +51,7 @@ func dialNativeMedia(ctx context.Context, routes []mediaProxy, viewer, sid uint3
 			if port == 0 {
 				continue
 			}
-			conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(net.IP(ip[:]).String(), strconv.Itoa(int(port))))
+			conn, err := network.DialContext(ctx, "tcp", net.JoinHostPort(net.IP(ip[:]).String(), strconv.Itoa(int(port))), &net.Dialer{Timeout: 3 * time.Second})
 			if err == nil {
 				return &nativeMediaConn{Conn: conn, viewer: viewer, sid: sid, video: video}, nil
 			}

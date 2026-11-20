@@ -11,28 +11,31 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/network"
 )
 
 type Config struct {
-	Window              Window `json:"window"`
-	Theme               string `json:"theme"`
-	RecordingPath       string `json:"recording_path"`
-	FFmpegPath          string `json:"ffmpeg_path,omitempty"`
-	Cookie              string `json:"bigo_cookie,omitempty"`
-	NativeDeviceID      string `json:"native_device_id"`
-	NativeListening     bool   `json:"native_listening"`
-	PollingBackup       bool   `json:"polling_backup"`
-	PollSeconds         int    `json:"poll_seconds"`
-	ColdSeconds         int    `json:"cold_seconds"`
-	RequestDelaySeconds int    `json:"request_delay_seconds"`
-	AutoPromote         bool   `json:"auto_promote"`
-	Notifications       bool   `json:"notifications"`
-	FolderPerStreamer   bool   `json:"folder_per_streamer"`
-	SplitMinutes        int    `json:"split_minutes,omitempty"`
-	PostProcess         bool   `json:"post_process"`
-	FFmpegArgs          string `json:"ffmpeg_args"`
-	OutputExtension     string `json:"output_extension"`
-	StreamQuality       string `json:"stream_quality,omitempty"`
+	Window              Window         `json:"window"`
+	Theme               string         `json:"theme"`
+	RecordingPath       string         `json:"recording_path"`
+	FFmpegPath          string         `json:"ffmpeg_path,omitempty"`
+	Cookie              string         `json:"bigo_cookie,omitempty"`
+	Proxy               network.Config `json:"proxy,omitempty"`
+	NativeDeviceID      string         `json:"native_device_id"`
+	NativeListening     bool           `json:"native_listening"`
+	PollingBackup       bool           `json:"polling_backup"`
+	PollSeconds         int            `json:"poll_seconds"`
+	ColdSeconds         int            `json:"cold_seconds"`
+	RequestDelaySeconds int            `json:"request_delay_seconds"`
+	AutoPromote         bool           `json:"auto_promote"`
+	Notifications       bool           `json:"notifications"`
+	FolderPerStreamer   bool           `json:"folder_per_streamer"`
+	SplitMinutes        int            `json:"split_minutes,omitempty"`
+	PostProcess         bool           `json:"post_process"`
+	FFmpegArgs          string         `json:"ffmpeg_args"`
+	OutputExtension     string         `json:"output_extension"`
+	StreamQuality       string         `json:"stream_quality,omitempty"`
 }
 
 // Native timestamp differences use signed 32-bit milliseconds.
@@ -131,6 +134,9 @@ func Defaults() Config {
 }
 
 func (c Config) Validate() error {
+	if err := c.Proxy.Validate(); err != nil {
+		return err
+	}
 	if c.NativeDeviceID == "" {
 		return errors.New("BIGO listener device identity is missing")
 	}

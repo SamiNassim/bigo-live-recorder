@@ -8,6 +8,8 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"bigo-live-recorder/internal/network"
 )
 
 // Guest audio uses datagrams. Keep each datagram intact while the native packet
@@ -72,7 +74,7 @@ func dialGuestAudio(ctx context.Context, routes []mediaProxy, viewer, sid uint32
 		return nil, errors.New("BIGO supplied no UDP route for guest audio")
 	}
 	address := addresses[attempt%len(addresses)]
-	conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "udp", address)
+	conn, err := network.DialContext(ctx, "udp", address, &net.Dialer{Timeout: 3 * time.Second})
 	if err != nil {
 		return nil, err
 	}

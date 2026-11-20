@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"bigo-live-recorder/internal/network"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -98,10 +99,21 @@ func (a *application) loadAvatar(address string) {
 		return
 	}
 	a.avatarLoading[address] = true
+	proxy := a.store.Config().Proxy
 	go func() {
 		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 		defer cancel()
-		bitmap, err := fetchAvatar(ctx, avatarClient, downloadURL)
+		client := avatarClient
+		if proxy.Enabled {
+			route, err := network.New(proxy)
+			if err != nil {
+				a.update(func() { delete(a.avatarLoading, address) })
+				return
+			}
+			defer route.CloseIdleConnections()
+			client = route.HTTPClient(10 * time.Second)
+		}
+		bitmap, err := fetchAvatar(ctx, client, downloadURL)
 		if a.ctx.Err() != nil {
 			return
 		}

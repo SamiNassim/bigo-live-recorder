@@ -5,7 +5,6 @@ package recording
 import (
 	"context"
 	"io"
-	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"bigo-live-recorder/internal/bigo"
 	"bigo-live-recorder/internal/fault"
 	"bigo-live-recorder/internal/ffmpeg"
+	"bigo-live-recorder/internal/network"
 	"bigo-live-recorder/internal/state"
 )
 
@@ -70,6 +70,13 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		return nil, fault.Action("FFmpeg was not found; install or select it in Settings", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
+	route, err := network.New(cfg.Proxy)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	ctx = network.WithRoute(ctx, route)
+	context.AfterFunc(ctx, route.CloseIdleConnections)
 	options := Options{}
 	if len(settings) > 0 {
 		options = settings[0]
@@ -91,7 +98,7 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 	if cfg.SplitMinutes > 0 && options.Broadcast.ID == "" {
 		options.Broadcast = NewSegmentedBroadcast(s, source, cfg, time.Now())
 	}
-	capture, err := bigo.OpenCapture(ctx, &http.Client{Timeout: 25 * time.Second}, source, bigo.Origin+"/"+s.ID, recovery, splitInterval)
+	capture, err := bigo.OpenCapture(ctx, route.HTTPClient(25*time.Second), source, bigo.Origin+"/"+s.ID, recovery, splitInterval)
 	if err != nil {
 		cancel()
 		return nil, err

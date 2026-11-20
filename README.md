@@ -111,6 +111,41 @@ The same cookie works for native notifications, polling, and recording. There is
 no second session to capture. If BIGO expires or revokes your sign-in, repeat these
 steps to replace the cookie.
 
+## Use a proxy
+
+Proxy support is optional and disabled by default. If your network requires a
+proxy, open **Settings → Proxy**, enable **Use a proxy**, and enter its URL:
+
+- SOCKS5: `socks5://127.0.0.1:1080`
+- HTTP CONNECT: `http://127.0.0.1:8080`
+- HTTPS proxy: `https://proxy.example:8443`
+
+Use the address and port supplied by your proxy program. Enter a username and
+password in the separate fields only if the proxy requires authentication.
+Credentials are saved locally with the app's settings.
+
+Click **Save settings** to apply the proxy. Changing the proxy reconnects native
+notifications and finishes active recordings before restarting them in new files.
+**Validate account** uses the proxy currently entered in the settings form, even
+before saving.
+
+The app routes BIGO account requests, native TCP connections, recording downloads,
+and avatars through the configured proxy. Failed proxy connections never silently
+fall back to a direct connection. Choose a fixed proxy exit for all BIGO traffic:
+different public IPs for authentication and the native connection can cause BIGO
+to reject the login with a source-IP restriction. A proxy program's routing rules
+can still select different exits, even when the app uses one proxy address.
+
+Native live notifications use TCP and can work without TUN mode. Multi-guest audio
+uses UDP and needs a SOCKS5 proxy that supports UDP forwarding, or a compatible
+TUN setup. Ordinary HTTP CONNECT proxies cannot carry that audio. The proxy must
+also allow connections to BIGO's native TCP ports.
+
+The app does not automatically import operating-system proxy settings. With
+**Use a proxy** disabled, existing behavior is preserved: HTTP requests can honor
+Go's standard proxy environment variables, and native connections use the normal
+network route.
+
 ## Choose how to monitor
 
 Change these options in **Settings → Monitoring**, then click **Save settings**:

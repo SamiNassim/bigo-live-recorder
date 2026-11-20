@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bigo-live-recorder/internal/network"
 )
 
 const (
@@ -410,7 +412,7 @@ func dialLinkd(ctx context.Context, session Session, dial func(context.Context, 
 
 func dialOneLinkd(ctx context.Context, address string, session Session) (*linkdClient, error) {
 	dialer := &net.Dialer{Timeout: linkdIOTimeout, KeepAlive: 30 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, err := network.DialContext(ctx, "tcp", address, dialer)
 	if err != nil {
 		return nil, err
 	}

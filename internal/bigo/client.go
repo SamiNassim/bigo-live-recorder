@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"bigo-live-recorder/internal/fault"
+	"bigo-live-recorder/internal/network"
 )
 
 const Origin = "https://www.bigo.tv"
@@ -173,6 +174,16 @@ type Client struct {
 func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 20 * time.Second}, base: apiBase, delay: 2 * time.Second}
 }
+
+// SetRoute changes future requests without mutating a transport in use. A
+// listener bootstrap can pin its own route in context across reconfiguration.
+func (c *Client) SetRoute(route *network.Route) {
+	c.mu.Lock()
+	previous := c.http
+	c.http = route.HTTPClient(20 * time.Second)
+	c.mu.Unlock()
+	previous.CloseIdleConnections()
+}
 func ParseCookie(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -311,7 +322,13 @@ func (c *Client) request(ctx context.Context, method, path string, form url.Valu
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
 	}
-	resp, err := c.http.Do(r)
+	c.mu.Lock()
+	client := c.http
+	c.mu.Unlock()
+	if route := network.FromContext(ctx); route != nil {
+		client = route.HTTPClient(client.Timeout)
+	}
+	resp, err := client.Do(r)
 	if err != nil {
 		var u *url.Error
 		if errors.As(err, &u) {
