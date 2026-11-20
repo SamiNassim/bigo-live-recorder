@@ -21,6 +21,7 @@ func TestUnsavedSettingsTracksEditsAndReverts(t *testing.T) {
 		{"cookie", func() { a.cfg.Cookie = "synthetic-cookie" }},
 		{"recording folder", func() { a.cfg.RecordingPath += "-new" }},
 		{"recording split interval", func() { a.splitChoice = "30 minutes" }},
+		{"split recording folders", func() { a.cfg.FolderPerSplitRecording = !saved.FolderPerSplitRecording }},
 		{"notifications", func() { a.cfg.Notifications = !saved.Notifications }},
 		{"output options", func() { a.cfg.FFmpegArgs += " -an" }},
 		{"output format", func() { a.cfg.OutputExtension = "ts" }},
@@ -76,6 +77,10 @@ func TestRecordingSplitSettingsPresetsAndCustom(t *testing.T) {
 	a := accountFixture(t)
 	a.page = "settings"
 	tt := ui.NewTester(a.view, 1400, 1100)
+	const folderLabel = "Group split clips in a separate folder"
+	if _, ok := tt.Find(folderLabel); ok {
+		t.Fatal("split folder setting is visible when splitting is off")
+	}
 	for _, choice := range []struct {
 		label   string
 		minutes int
@@ -97,6 +102,9 @@ func TestRecordingSplitSettingsPresetsAndCustom(t *testing.T) {
 		if got := a.settingsConfig().SplitMinutes; got != choice.minutes || customVisible != (choice.label == "Custom") {
 			t.Fatal("wrong split preference", choice, got, customVisible)
 		}
+		if _, visible := tt.Find(folderLabel); visible != (choice.minutes > 0) {
+			t.Fatal("split folder setting visibility does not follow splitting", choice)
+		}
 		if choice.label == "Custom" {
 			a.splitMinutes = 45
 			cfg := a.settingsConfig()
@@ -110,6 +118,46 @@ func TestRecordingSplitSettingsPresetsAndCustom(t *testing.T) {
 			}
 			tt.Frame()
 		}
+	}
+}
+
+func TestSplitFolderSwitchPersistsIndependentlyOfSplitting(t *testing.T) {
+	a := accountFixture(t)
+	a.page = "settings"
+	a.splitChoice = "30 minutes"
+	tt := ui.NewTester(a.view, 1400, 1100)
+	const label = "Split recording folder"
+	control, ok := tt.Find(label)
+	if !ok || !a.cfg.FolderPerSplitRecording {
+		t.Fatal("split folder setting is missing or disabled by default")
+	}
+	viewport, _ := tt.Find("Settings sections")
+	a.settingsScroll.Y += control.Y - viewport.Y - 80
+	tt.Frame()
+	if err := tt.Click(label); err != nil {
+		t.Fatal(err)
+	}
+	if a.cfg.FolderPerSplitRecording || !a.cfg.FolderPerStreamer || !a.unsavedSettings() {
+		t.Fatal("split folder switch did not independently update draft settings")
+	}
+	a.splitChoice = "Off"
+	tt.Frame()
+	if _, ok := tt.Find(label); ok {
+		t.Fatal("split folder setting remained visible after disabling splitting")
+	}
+	if err := a.store.SaveConfig(a.settingsConfig()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := state.Open(a.store.Directory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.cfg = reopened.Config()
+	a.loadNumbers()
+	a.splitChoice = "1 hour"
+	tt.Frame()
+	if _, ok := tt.Find(label); !ok || a.cfg.FolderPerSplitRecording || !a.cfg.FolderPerStreamer {
+		t.Fatal("split folder preference was lost while splitting was off")
 	}
 }
 

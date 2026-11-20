@@ -138,6 +138,7 @@ func TestTimedSplitsKeepOneBroadcastClockAndHistory(t *testing.T) {
 			t.Fatal("clip was not saved under the broadcast", r)
 		}
 	}
+	cfg.FolderPerSplitRecording = false
 	options, err := e.broadcastOptions(context.Background(), streamer, source, cfg)
 	if err != nil || options.Broadcast != data.Broadcasts[0] {
 		t.Fatal("same room did not reuse the saved broadcast", options.Broadcast, err)

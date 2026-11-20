@@ -102,8 +102,17 @@ func (s *Store) MissingBroadcasts() []Broadcast {
 	isMissing := missingFromAvailableFolder(s.Config().RecordingPath)
 	var missing []Broadcast
 	for _, b := range data.Broadcasts {
-		if !referenced[b.ID] && !b.ReplayPending && isMissing(b.Directory) &&
-			(b.ReplayPath == "" || isMissing(b.ReplayPath)) {
+		if referenced[b.ID] || b.ReplayPending {
+			continue
+		}
+		noMedia := isMissing(b.Directory)
+		if b.Segmented && b.SharedDirectory {
+			// Other broadcasts can keep a shared folder present after all of
+			// this group's files leave history. Unavailable disks prove nothing.
+			info, err := os.Stat(b.Directory)
+			noMedia = noMedia || err == nil && info.IsDir()
+		}
+		if noMedia && (b.ReplayPath == "" || isMissing(b.ReplayPath)) {
 			missing = append(missing, b)
 		}
 	}

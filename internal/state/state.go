@@ -16,26 +16,27 @@ import (
 )
 
 type Config struct {
-	Window              Window         `json:"window"`
-	Theme               string         `json:"theme"`
-	RecordingPath       string         `json:"recording_path"`
-	FFmpegPath          string         `json:"ffmpeg_path,omitempty"`
-	Cookie              string         `json:"bigo_cookie,omitempty"`
-	Proxy               network.Config `json:"proxy,omitempty"`
-	NativeDeviceID      string         `json:"native_device_id"`
-	NativeListening     bool           `json:"native_listening"`
-	PollingBackup       bool           `json:"polling_backup"`
-	PollSeconds         int            `json:"poll_seconds"`
-	ColdSeconds         int            `json:"cold_seconds"`
-	RequestDelaySeconds int            `json:"request_delay_seconds"`
-	AutoPromote         bool           `json:"auto_promote"`
-	Notifications       bool           `json:"notifications"`
-	FolderPerStreamer   bool           `json:"folder_per_streamer"`
-	SplitMinutes        int            `json:"split_minutes,omitempty"`
-	PostProcess         bool           `json:"post_process"`
-	FFmpegArgs          string         `json:"ffmpeg_args"`
-	OutputExtension     string         `json:"output_extension"`
-	StreamQuality       string         `json:"stream_quality,omitempty"`
+	Window                  Window         `json:"window"`
+	Theme                   string         `json:"theme"`
+	RecordingPath           string         `json:"recording_path"`
+	FFmpegPath              string         `json:"ffmpeg_path,omitempty"`
+	Cookie                  string         `json:"bigo_cookie,omitempty"`
+	Proxy                   network.Config `json:"proxy,omitempty"`
+	NativeDeviceID          string         `json:"native_device_id"`
+	NativeListening         bool           `json:"native_listening"`
+	PollingBackup           bool           `json:"polling_backup"`
+	PollSeconds             int            `json:"poll_seconds"`
+	ColdSeconds             int            `json:"cold_seconds"`
+	RequestDelaySeconds     int            `json:"request_delay_seconds"`
+	AutoPromote             bool           `json:"auto_promote"`
+	Notifications           bool           `json:"notifications"`
+	FolderPerStreamer       bool           `json:"folder_per_streamer"`
+	FolderPerSplitRecording bool           `json:"folder_per_split_recording"`
+	SplitMinutes            int            `json:"split_minutes,omitempty"`
+	PostProcess             bool           `json:"post_process"`
+	FFmpegArgs              string         `json:"ffmpeg_args"`
+	OutputExtension         string         `json:"output_extension"`
+	StreamQuality           string         `json:"stream_quality,omitempty"`
 }
 
 // Native timestamp differences use signed 32-bit milliseconds.
@@ -101,21 +102,22 @@ type Recording struct {
 // Broadcast outlives individual files, media reconnects and application restarts.
 // RoomID is the full provider room identity, not its truncated transport SID.
 type Broadcast struct {
-	ID            string    `json:"id"`
-	StreamerID    string    `json:"streamer_id"`
-	OwnerUID      uint32    `json:"owner_uid"`
-	RoomID        string    `json:"room_id"`
-	Directory     string    `json:"directory"`
-	StartedAt     time.Time `json:"started_at"`
-	EndedAt       time.Time `json:"ended_at,omitempty"`
-	Segmented     bool      `json:"segmented,omitempty"`
-	Notified      bool      `json:"notified,omitempty"`
-	Files         int       `json:"files"`
-	Bytes         int64     `json:"bytes"`
-	ReplayPath    string    `json:"replay_path,omitempty"`
-	ReplayError   string    `json:"replay_error,omitempty"`
-	ReplayPending bool      `json:"replay_pending,omitempty"`
-	ReplayThrough time.Time `json:"replay_through,omitempty"`
+	ID              string    `json:"id"`
+	StreamerID      string    `json:"streamer_id"`
+	OwnerUID        uint32    `json:"owner_uid"`
+	RoomID          string    `json:"room_id"`
+	Directory       string    `json:"directory"`
+	SharedDirectory bool      `json:"shared_directory,omitempty"`
+	StartedAt       time.Time `json:"started_at"`
+	EndedAt         time.Time `json:"ended_at,omitempty"`
+	Segmented       bool      `json:"segmented,omitempty"`
+	Notified        bool      `json:"notified,omitempty"`
+	Files           int       `json:"files"`
+	Bytes           int64     `json:"bytes"`
+	ReplayPath      string    `json:"replay_path,omitempty"`
+	ReplayError     string    `json:"replay_error,omitempty"`
+	ReplayPending   bool      `json:"replay_pending,omitempty"`
+	ReplayThrough   time.Time `json:"replay_through,omitempty"`
 }
 
 type Data struct {
@@ -129,7 +131,7 @@ func Defaults() Config {
 	home, _ := os.UserHomeDir()
 	return Config{Theme: "system", RecordingPath: filepath.Join(home, "Movies", "BIGO Live Recorder"), NativeListening: true,
 		NativeDeviceID: "web_" + rand.Text(),
-		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true,
+		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true, FolderPerSplitRecording: true,
 		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv", StreamQuality: "origin"}
 }
 

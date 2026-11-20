@@ -25,16 +25,20 @@ func NewBroadcast(streamer state.Streamer, source bigo.Stream, cfg state.Config,
 }
 
 // NewSegmentedBroadcast uses the provider room when available. With no room
-// identity, each capture gets its own group and folder.
+// identity, each capture gets its own group. A separate folder is optional.
 func NewSegmentedBroadcast(streamer state.Streamer, source bigo.Stream, cfg state.Config, now time.Time) state.Broadcast {
 	room := source.RoomID
 	if room == "" || room == "0" {
 		room = fmt.Sprintf("capture-%d", now.UnixNano())
 	}
 	id := fmt.Sprintf("split:%q:%q", streamer.ID, room)
-	folder := safeName(streamer.ID) + "_" + now.Format("2006-01-02_15-04-05") + "_stream-" + safeName(room)
+	directory := recordingDirectory(streamer, cfg)
+	if cfg.FolderPerSplitRecording {
+		folder := safeName(streamer.ID) + "_" + now.Format("2006-01-02_15-04-05") + "_stream-" + safeName(room)
+		directory = filepath.Join(directory, folder)
+	}
 	return state.Broadcast{ID: id, StreamerID: streamer.ID, OwnerUID: source.UID, RoomID: source.RoomID, Segmented: true,
-		Directory: filepath.Join(recordingDirectory(streamer, cfg), folder)}
+		Directory: directory, SharedDirectory: !cfg.FolderPerSplitRecording}
 }
 
 func (h *Handle) Broadcast() state.Broadcast { return h.broadcast }

@@ -295,6 +295,62 @@ func TestStopWhileWaitingForNextFormatFinalizesPromptly(t *testing.T) {
 	}
 }
 
+func TestSplitRecordingsWithoutBroadcastFolder(t *testing.T) {
+	ffmpeg, err := FindFFmpeg("")
+	if err != nil {
+		t.Skip("FFmpeg is not installed")
+	}
+	media, err := os.ReadFile(fileFixture(t, ffmpeg, "libx264", "64x96"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, native := range []bool{false, true} {
+		t.Run(strconv.FormatBool(native), func(t *testing.T) {
+			cfg := state.Defaults()
+			cfg.RecordingPath = filepath.Join(t.TempDir(), "clips 100%")
+			cfg.FolderPerStreamer, cfg.FolderPerSplitRecording = false, false
+			cfg.SplitMinutes = 1
+			streamer := state.Streamer{ID: "host.example"}
+			broadcast := NewSegmentedBroadcast(streamer, bigo.Stream{RoomID: "fixture-room"}, cfg, time.Now())
+			capture := &fixtureCapture{}
+			for range 2 {
+				capture.parts = append(capture.parts, &bigo.CapturePart{ReadCloser: io.NopCloser(bytes.NewReader(media)), Native: native})
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			h, err := startCapture(ctx, cancel, ffmpeg, streamer, cfg, participantCapture{Capture: capture, broadcast: broadcast}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Stop()
+			result := h.Result()
+			if result.Err != nil || result.Bytes == 0 || filepath.Dir(result.Path) != cfg.RecordingPath {
+				t.Fatal("last clip was not saved directly in the recording folder", result)
+			}
+			for _, change := range h.DrainFileChanges() {
+				if change.BroadcastID != broadcast.ID || filepath.Dir(change.Path) != cfg.RecordingPath {
+					t.Fatal("flat clips lost their broadcast identity or recording folder", change)
+				}
+				if change.Result != nil && (change.Result.Err != nil || change.Result.Bytes == 0) {
+					t.Fatal("flat clip finalization failed", change.Result)
+				}
+			}
+			entries, err := os.ReadDir(cfg.RecordingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 2 {
+				t.Fatal("unexpected number of saved clips", len(entries))
+			}
+			for _, entry := range entries {
+				if entry.IsDir() || filepath.Ext(entry.Name()) != ".mkv" {
+					t.Fatal("flat recording created an unexpected folder or file", entry.Name())
+				}
+			}
+		})
+	}
+}
+
 func TestWebTimedSplitPublishesCompletedClipsBeforeEOF(t *testing.T) {
 	ffmpeg, err := FindFFmpeg("")
 	if err != nil {
@@ -316,8 +372,12 @@ func TestWebTimedSplitPublishesCompletedClipsBeforeEOF(t *testing.T) {
 	cfg := state.Defaults()
 	cfg.SplitMinutes = 1
 	cfg.RecordingPath = filepath.Join(t.TempDir(), "clips 100%")
+	cfg.FolderPerStreamer, cfg.FolderPerSplitRecording = false, false
 	streamer := state.Streamer{ID: "fixture"}
 	broadcast := NewSegmentedBroadcast(streamer, bigo.Stream{RoomID: "fixture-room"}, cfg, time.Now())
+	if broadcast.Directory != cfg.RecordingPath {
+		t.Fatal("timed clips were assigned a separate folder")
+	}
 	h, err := startCapture(ctx, cancel, ffmpeg, streamer, cfg, participantCapture{Capture: capture, broadcast: broadcast}, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -266,7 +266,8 @@ func section(c *ui.Context, title, subtitle string, body func()) ui.Element {
 		body()
 	})
 }
-func toggle(c *ui.Context, label, detail string, value *bool) {
+func toggle(c *ui.Context, label, detail string, value *bool) ui.Element {
+	var control ui.Element
 	ui.Row(c).FillWidth().Gap(20).AlignItems(ui.Center).Children(func() {
 		ui.Column(c).Grow(1).Gap(4).Children(func() {
 			ui.Text(c, label).FontWeight(500)
@@ -274,8 +275,9 @@ func toggle(c *ui.Context, label, detail string, value *bool) {
 				ui.Text(c, detail).TextColor(c.Theme().TextMuted).FontSize(11).MaxLines(3)
 			}
 		})
-		ui.Switch(c, value).Label(label)
+		control = ui.Switch(c, value).Label(label)
 	})
+	return control
 }
 func number(c *ui.Context, label string, value *float64, lo, hi float64) {
 	ui.Column(c).Grow(1).Gap(8).Children(func() {
@@ -412,6 +414,9 @@ func (a *application) settings(c *ui.Context) {
 			})
 			if a.splitChoice == "Custom" {
 				number(c, "Split interval (minutes)", &a.splitMinutes, 1, float64(state.MaxSplitMinutes))
+			}
+			if a.splitChoice != "Off" {
+				toggle(c, "Group split clips in a separate folder", "Create a folder for each broadcast. Turn off to save clips directly in the recording folder, or the streamer's folder when enabled.", &a.cfg.FolderPerSplitRecording).Label("Split recording folder")
 			}
 			ui.Text(c, "Applies to new recordings. Completed clips are available while the stream is live. Video splits at a keyframe.").FontSize(11).TextColor(t.TextMuted).MaxLines(3)
 			toggle(c, "Create a processed copy with FFmpeg", "Runs after the recording ends. The original MKV is always kept, even if processing fails.", &a.cfg.PostProcess)

@@ -50,6 +50,12 @@ func TestPruneMissingBroadcastsPreservesHistoryAndCaptures(t *testing.T) {
 	capturing.StreamerID, starting.StreamerID = "capturing.example", "starting.example"
 	detached := missing("detached")
 	detached.Directory = filepath.Join(t.TempDir(), "unmounted", "room")
+	shared := missing("shared")
+	shared.Directory, shared.Segmented, shared.SharedDirectory = cfg.RecordingPath, true, true
+	sharedLinked, sharedCapturing, sharedDetached := shared, shared, shared
+	sharedLinked.ID, sharedCapturing.ID, sharedDetached.ID = "shared-linked", "shared-capturing", "shared-detached"
+	sharedCapturing.StreamerID = "shared-capturing.example"
+	sharedDetached.Directory = detached.Directory
 	original, replay := missing("original"), missing("replay")
 	if err := os.MkdirAll(original.Directory, 0700); err != nil {
 		t.Fatal(err)
@@ -58,10 +64,13 @@ func TestPruneMissingBroadcastsPreservesHistoryAndCaptures(t *testing.T) {
 	if err := os.WriteFile(replay.ReplayPath, []byte("fixture replay"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	kept := []state.Broadcast{linked, pending, capturing, starting, detached, original, replay}
+	kept := []state.Broadcast{linked, pending, capturing, starting, detached, original, replay, sharedLinked, sharedCapturing, sharedDetached}
 	if err := store.Update(func(d *state.Data) error {
-		d.Broadcasts = append([]state.Broadcast{open, ended}, kept...)
-		d.Recordings = []state.Recording{{ID: "clip", Path: filepath.Join(linked.Directory, "clip.mkv"), BroadcastID: linked.ID}}
+		d.Broadcasts = append([]state.Broadcast{open, ended, shared}, kept...)
+		d.Recordings = []state.Recording{
+			{ID: "clip", Path: filepath.Join(linked.Directory, "clip.mkv"), BroadcastID: linked.ID},
+			{ID: "shared-clip", Path: filepath.Join(sharedLinked.Directory, "clip.mkv"), BroadcastID: sharedLinked.ID},
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -69,8 +78,9 @@ func TestPruneMissingBroadcastsPreservesHistoryAndCaptures(t *testing.T) {
 	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	e := &Engine{store: store, items: map[string]*item{
-		capturing.StreamerID: {handle: &fakeRecording{}},
-		starting.StreamerID:  {recordCancel: cancel},
+		capturing.StreamerID:       {handle: &fakeRecording{}},
+		starting.StreamerID:        {recordCancel: cancel},
+		sharedCapturing.StreamerID: {handle: &fakeRecording{}},
 	}}
 	if err := e.PruneMissingBroadcasts(); err != nil {
 		t.Fatal(err)
@@ -83,7 +93,7 @@ func TestPruneMissingBroadcastsPreservesHistoryAndCaptures(t *testing.T) {
 	if len(saved.Broadcasts) != len(kept) || !slices.EqualFunc(saved.Broadcasts, kept, func(a, b state.Broadcast) bool { return a.ID == b.ID }) {
 		t.Fatalf("cleanup kept the wrong broadcasts: %+v", saved.Broadcasts)
 	}
-	if len(saved.Recordings) != 1 || saved.Recordings[0].BroadcastID != linked.ID {
+	if len(saved.Recordings) != 2 || saved.Recordings[0].BroadcastID != linked.ID || saved.Recordings[1].BroadcastID != sharedLinked.ID {
 		t.Fatal("cleanup changed linked recording history")
 	}
 	if data, err := os.ReadFile(replay.ReplayPath); err != nil || string(data) != "fixture replay" {

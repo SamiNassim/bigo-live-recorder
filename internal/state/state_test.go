@@ -42,6 +42,53 @@ func TestDefaultsAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSplitRecordingFolderDefaultAndPersistence(t *testing.T) {
+	for _, preference := range []string{"missing", "true", "false"} {
+		t.Run(preference, func(t *testing.T) {
+			dir := t.TempDir()
+			raw, err := json.Marshal(Defaults())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if preference == "missing" {
+				delete(fields, "folder_per_split_recording")
+			} else {
+				fields["folder_per_split_recording"] = json.RawMessage(preference)
+			}
+			raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "config.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := store.Config()
+			if cfg.FolderPerSplitRecording != (preference != "false") {
+				t.Fatal("split folder preference did not preserve existing behavior")
+			}
+			cfg.FolderPerSplitRecording = !cfg.FolderPerSplitRecording
+			if err := store.SaveConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reopened.Config().FolderPerSplitRecording != cfg.FolderPerSplitRecording {
+				t.Fatal("split folder preference was lost after reopening")
+			}
+		})
+	}
+}
+
 func TestLegacyNativeSessionIsRemovedWithoutLosingCookie(t *testing.T) {
 	dir := t.TempDir()
 	c := Defaults()
