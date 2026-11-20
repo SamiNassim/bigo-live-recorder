@@ -87,6 +87,8 @@ type application struct {
 	normalSeconds, coldSeconds, delaySeconds float64
 	splitChoice                              string
 	splitMinutes                             float64
+	splitMode, splitSizeUnit                 string
+	splitSize                                float64
 	cookieEditedAt                           time.Time
 	cookieLastChecked                        string
 }
@@ -110,9 +112,21 @@ func (a *application) loadNumbers() {
 	a.coldSeconds = float64(a.cfg.ColdSeconds)
 	a.delaySeconds = float64(a.cfg.RequestDelaySeconds)
 	a.splitMinutes = float64(a.cfg.SplitMinutes)
+	a.splitMode = "Off"
+	a.splitSizeUnit = a.cfg.SplitSizeUnit
+	if a.splitSizeUnit == "" {
+		a.splitSizeUnit = "GB"
+	}
+	a.splitSize = 2 * float64(state.BytesPerGB) / a.splitSizeScale()
+	if a.cfg.SplitBytes > 0 {
+		a.splitMode = "By file size"
+		a.splitSize = float64(a.cfg.SplitBytes) / a.splitSizeScale()
+	} else if a.cfg.SplitMinutes > 0 {
+		a.splitMode = "By duration"
+	}
 	switch a.cfg.SplitMinutes {
 	case 0:
-		a.splitChoice = "Off"
+		a.splitChoice = "30 minutes"
 		a.splitMinutes = 30
 	case 30:
 		a.splitChoice = "30 minutes"

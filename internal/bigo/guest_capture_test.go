@@ -145,6 +145,28 @@ func TestGuestTimedAudioOnlySplitKeepsBoundaryAudio(t *testing.T) {
 	}
 }
 
+func TestGuestRequestedAudioSplitKeepsEverySample(t *testing.T) {
+	c := nativeCaptureFixture(t, []nativeMediaFrame{guestAudio(1000), guestAudio(1020), guestAudio(1040)})
+	c.guest = true
+	for i, want := range []int{1, 2} {
+		part, err := c.Next(t.Context())
+		if err != nil || !part.AudioOnly || part.RequestSplit == nil {
+			t.Fatal("audio capture cannot request a boundary", err)
+		}
+		if i == 0 {
+			part.RequestSplit()
+		}
+		data, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(nativeCapturePayloads(t, data)[257]); got != want {
+			t.Fatal("requested audio split lost samples", i, got, want)
+		}
+	}
+}
+
 func TestGuestCameraGapDoesNotSplitTheFile(t *testing.T) {
 	c := nativeCaptureFixture(t, []nativeMediaFrame{nativeCaptureVideo(1000, true, 2, 1), guestAudio(1000), guestAudio(1020), guestAudio(1040), guestAudio(1060), nativeCaptureVideo(1080, true, 2, 2), guestAudio(1080)})
 	c.guest = true

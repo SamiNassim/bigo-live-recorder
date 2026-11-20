@@ -15,7 +15,7 @@ func recordingSettings(streamer state.Streamer, cfg state.Config) string {
 	if quality == "" {
 		quality = cfg.StreamQuality
 	}
-	return fmt.Sprintf("Requested quality: %s. Split interval: %d min (0 disables timed splitting). Processed copies: %t.", quality, cfg.SplitMinutes, cfg.PostProcess)
+	return fmt.Sprintf("Requested quality: %s. Split interval: %d min. Split size: %d bytes (0 disables each limit). Processed copies: %t.", quality, cfg.SplitMinutes, cfg.SplitBytes, cfg.PostProcess)
 }
 
 func recordingDetails(result recording.Result) string {

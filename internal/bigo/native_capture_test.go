@@ -176,6 +176,50 @@ func TestNativeTimedSplitKeepsLateAudioAndSuppliesHeaders(t *testing.T) {
 	}
 }
 
+func TestNativeRequestedSplitKeepsLateAudioAndIsScopedToOnePart(t *testing.T) {
+	for _, guest := range []bool{false, true} {
+		c := nativeCaptureFixture(t, []nativeMediaFrame{
+			nativeCaptureVideo(1000, true, 2, 1), nativeCaptureAudio(1010),
+			nativeCaptureVideo(1040, false, 2, 2),
+			nativeCaptureVideo(1080, true, 2, 3), nativeCaptureAudio(1050), nativeCaptureAudio(1080),
+			nativeCaptureVideo(1120, false, 2, 4), nativeCaptureAudio(1130),
+			nativeCaptureVideo(1160, true, 2, 5), nativeCaptureAudio(1170),
+		})
+		c.guest = guest
+		part, err := c.Next(t.Context())
+		if err != nil || part.RequestSplit == nil {
+			t.Fatal("capture cannot request a file boundary", err)
+		}
+		part.RequestSplit()
+		data, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := nativeCapturePayloads(t, data)
+		if len(got[256]) != 2 || len(got[257]) != 2 {
+			t.Fatal("requested boundary lost late audio or split before a keyframe", guest, len(got[256]), len(got[257]))
+		}
+		part.RequestSplit() // A finalized writer must not split its successor.
+		part, err = c.Next(t.Context())
+		if err != nil || part.Reason == "" {
+			t.Fatal("missing requested continuation", err)
+		}
+		data, err = io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = nativeCapturePayloads(t, data)
+		if len(got[256]) != 3 || len(got[257]) != 3 {
+			t.Fatal("an old size request affected the next file", guest, len(got[256]), len(got[257]))
+		}
+		if _, err := c.Next(t.Context()); !errors.Is(err, io.EOF) {
+			t.Fatal("unexpected additional split", err)
+		}
+	}
+}
+
 func TestNativeCaptureAssignsLateAudioToTheCorrectFile(t *testing.T) {
 	var frames []nativeMediaFrame
 	for i, codec := range []byte{5, 5, 2, 2, 5, 5} {

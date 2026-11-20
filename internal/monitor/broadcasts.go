@@ -40,7 +40,7 @@ func (e *Engine) PruneMissingBroadcasts() error {
 func (e *Engine) broadcastOptions(ctx context.Context, streamer state.Streamer, source bigo.Stream, cfg state.Config) (recording.Options, error) {
 	options := recording.Options{}
 	if source.RoomKind != bigo.RoomAudioMultiGuest && source.RoomKind != bigo.RoomHybridMultiGuest {
-		if cfg.SplitMinutes > 0 {
+		if cfg.SplitEnabled() {
 			options.Broadcast = recording.NewSegmentedBroadcast(streamer, source, cfg, time.Now())
 			for _, saved := range e.store.Data().Broadcasts {
 				if saved.ID == options.Broadcast.ID {

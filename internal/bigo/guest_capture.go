@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"time"
 )
 
@@ -107,6 +108,7 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 	c.mu.Unlock()
 	reason := c.reason
 	c.reason = ""
+	request := &atomic.Bool{}
 	if firstVideo.key {
 		codec, err := nativeVideoType(firstVideo.codec)
 		if err != nil {
@@ -116,11 +118,11 @@ func (c *nativeCapture) nextGuestPart(ctx context.Context) (*CapturePart, error)
 			return nil, err
 		}
 		c.clock = &nativeTSClock{started: true, base: base, codec: codec, lastPTS: -1}
-		go c.writePart(writer, done, codec, config, config == (nativeAudioConfig{}))
+		go c.writePart(writer, done, codec, config, config == (nativeAudioConfig{}), request)
 	} else {
-		go c.writeGuestAudio(writer, done, config)
+		go c.writeGuestAudio(writer, done, config, request)
 	}
-	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, AudioOnly: !firstVideo.key, Timing: c.timing}, nil
+	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, AudioOnly: !firstVideo.key, Timing: c.timing, RequestSplit: func() { request.Store(true) }}, nil
 }
 
 // Determine the tracks that can actually reach the first file before exposing
@@ -192,7 +194,7 @@ func (c *nativeCapture) guestStartupPrefix(ctx context.Context, waiting *nativeF
 	return prefix, video, audio, nil
 }
 
-func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{}, config nativeAudioConfig) {
+func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{}, config nativeAudioConfig, request *atomic.Bool) {
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
@@ -227,7 +229,8 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			return
 		}
 		changed := audioConfig(f) != config
-		if changed || mux.splitDue(f, c.splitInterval) {
+		sized := mux.started && request.Load()
+		if changed || sized || mux.splitDue(f, c.splitInterval) {
 			tail := newNativeFrameQueue(1 << 20)
 			if err := tail.push(f); err != nil {
 				tail.close()
@@ -237,6 +240,9 @@ func (c *nativeCapture) writeGuestAudio(writer *io.PipeWriter, done chan struct{
 			tail.finish(nil)
 			c.deferred = append([]*nativeFrameQueue{tail}, c.deferred...)
 			c.reason = "Recording split interval reached; continuing in a new file"
+			if sized {
+				c.reason = "Recording file size reached; continuing in a new file"
+			}
 			if changed {
 				c.reason = "Guest audio encoding changed; continuing in a new audio recording"
 			}

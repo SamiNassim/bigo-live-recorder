@@ -95,7 +95,7 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 		h.roomKind = source.RoomKind
 		return h, nil
 	}
-	if cfg.SplitMinutes > 0 && options.Broadcast.ID == "" {
+	if cfg.SplitEnabled() && options.Broadcast.ID == "" {
 		options.Broadcast = NewSegmentedBroadcast(s, source, cfg, time.Now())
 	}
 	capture, err := bigo.OpenCapture(ctx, route.HTTPClient(25*time.Second), source, bigo.Origin+"/"+s.ID, recovery, splitInterval)
@@ -118,6 +118,10 @@ func Start(parent context.Context, s state.Streamer, source bigo.Stream, cfg sta
 }
 
 func startCapture(ctx context.Context, cancel context.CancelFunc, ffmpeg string, s state.Streamer, cfg state.Config, capture bigo.Capture, report func(string, string), settings ...captureOptions) (*Handle, error) {
+	if cfg.SplitBytes > 0 {
+		sizeCtx, sizeCancel := context.WithCancel(ctx)
+		capture = &sizeCapture{ctx: sizeCtx, cancel: sizeCancel, ffmpeg: ffmpeg, source: capture}
+	}
 	part, err := capture.Next(ctx)
 	if err != nil {
 		cancel()

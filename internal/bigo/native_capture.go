@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bigo-live-recorder/internal/fault"
@@ -403,8 +404,9 @@ func (c *nativeCapture) Next(ctx context.Context) (*CapturePart, error) {
 	waiting.finish(nil)
 	c.deferred = append([]*nativeFrameQueue{waiting}, c.deferred...)
 	waiting = nil
-	go c.writePart(writer, done, codec, config, noAudio)
-	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true}, nil
+	request := &atomic.Bool{}
+	go c.writePart(writer, done, codec, config, noAudio, request)
+	return &CapturePart{ReadCloser: reader, Reason: reason, Native: true, RequestSplit: func() { request.Store(true) }}, nil
 }
 
 func (c *nativeCapture) rememberVideo(f nativeMediaFrame) error {
@@ -437,7 +439,7 @@ func (c *nativeCapture) clearPreroll() {
 	c.gops = nil
 }
 
-func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, codec byte, config nativeAudioConfig, noAudio bool) {
+func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, codec byte, config nativeAudioConfig, noAudio bool, request *atomic.Bool) {
 	defer close(done)
 	stop := context.AfterFunc(c.ctx, func() { writer.CloseWithError(c.ctx.Err()) })
 	defer stop()
@@ -471,11 +473,7 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 			continue
 		}
 		if f.video {
-			var boundary nativeMediaFrame
-			var headersReady bool
-			if c.guest || c.splitInterval > 0 {
-				boundary, headersReady = c.videoHeaders.prepare(f)
-			}
+			boundary, headersReady := c.videoHeaders.prepare(f)
 			if c.guest {
 				f = boundary
 			}
@@ -485,7 +483,8 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 				return
 			}
 			timed := fresh == codec && headersReady && mux.splitDue(f, c.splitInterval)
-			if fresh != codec || timed {
+			sized := fresh == codec && headersReady && mux.started && request.Load()
+			if fresh != codec || timed || sized {
 				if !f.key {
 					if !warnedPrefix && c.recovery.Report != nil {
 						c.recovery.Report("WARN", "Video encoding changed without a keyframe; waiting for decodable video")
@@ -494,9 +493,12 @@ func (c *nativeCapture) writePart(writer *io.PipeWriter, done chan struct{}, cod
 					continue
 				}
 				reason := "Video encoding changed; continuing in a new recording"
-				if timed {
+				if timed || sized {
 					f = boundary
 					reason = "Recording split interval reached; continuing in a new file"
+					if sized {
+						reason = "Recording file size reached; continuing in a new file"
+					}
 				}
 				// Audio travels on an independent socket. Keep this file open
 				// until audio reaches the new keyframe, otherwise late samples

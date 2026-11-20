@@ -79,6 +79,7 @@ type fileWriter struct {
 	timingOnce sync.Once
 	segments   *webSegments
 	saved      *Result
+	splitBytes int64
 }
 
 type captureOptions struct {
@@ -140,7 +141,7 @@ func startFile(ffmpeg string, s state.Streamer, cfg state.Config, part *bigo.Cap
 		stdin.Close()
 		return nil, fault.Action("FFmpeg could not start; check its installation in Settings", err)
 	}
-	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr, segments: segments}
+	f := &fileWriter{path: path, started: stamp, part: part, cmd: cmd, stdin: stdin, copied: make(chan error, 1), waited: make(chan error, 1), stderr: stderr, segments: segments, splitBytes: cfg.SplitBytes}
 	if len(settings) > 0 && settings[0].timing != nil && part.Timing != nil && !part.Timing.Epoch.IsZero() {
 		options := settings[0]
 		f.journal = options.timing
@@ -282,11 +283,12 @@ func (h *Handle) record(ctx context.Context, capture bigo.Capture, current *file
 
 func (f *fileWriter) waitForInput(ctx context.Context, capture bigo.Capture, h *Handle) error {
 	var ticks <-chan time.Time
-	if f.segments != nil {
+	if f.segments != nil || f.splitBytes > 0 && f.part.RequestSplit != nil {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
 		ticks = ticker.C
 	}
+	requested := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -302,7 +304,14 @@ func (f *fileWriter) waitForInput(ctx context.Context, capture bigo.Capture, h *
 		case err := <-f.copied:
 			return err
 		case <-ticks:
-			f.publishWebSegments(h)
+			if f.segments != nil {
+				f.publishWebSegments(h)
+			} else if !requested {
+				if info, err := os.Stat(f.path); err == nil && info.Size() >= f.splitBytes {
+					f.part.RequestSplit()
+					requested = true
+				}
+			}
 		}
 	}
 }

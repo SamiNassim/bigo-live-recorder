@@ -89,6 +89,52 @@ func TestSplitRecordingFolderDefaultAndPersistence(t *testing.T) {
 	}
 }
 
+func TestFileSizeSplitValidationAndPersistence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		bytes   int64
+		minutes int
+		unit    string
+		valid   bool
+	}{
+		{"off", 0, 0, "GB", true},
+		{"duration", 0, 30, "GB", true},
+		{"MB", 500 * BytesPerMB, 0, "MB", true},
+		{"GB", 2 * BytesPerGB, 0, "GB", true},
+		{"minimum", MinSplitBytes, 0, "MB", true},
+		{"maximum", MaxSplitBytes, 0, "GB", true},
+		{"too small", MinSplitBytes - 1, 0, "MB", false},
+		{"too large", MaxSplitBytes + 1, 0, "GB", false},
+		{"negative", -1, 0, "GB", false},
+		{"both limits", 2 * BytesPerGB, 30, "GB", false},
+		{"unknown unit", BytesPerGB, 0, "TB", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := store.Config()
+			cfg.SplitBytes, cfg.SplitMinutes, cfg.SplitSizeUnit = test.bytes, test.minutes, test.unit
+			err = store.SaveConfig(cfg)
+			if (err == nil) != test.valid {
+				t.Fatal("unexpected split validation", err)
+			}
+			if !test.valid {
+				return
+			}
+			reopened, err := Open(store.Directory())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := reopened.Config()
+			if got.SplitBytes != test.bytes || got.SplitMinutes != test.minutes || got.SplitSizeUnit != test.unit || got.SplitEnabled() != (test.bytes > 0 || test.minutes > 0) {
+				t.Fatal("split settings did not survive reopening")
+			}
+		})
+	}
+}
+
 func TestLegacyNativeSessionIsRemovedWithoutLosingCookie(t *testing.T) {
 	dir := t.TempDir()
 	c := Defaults()

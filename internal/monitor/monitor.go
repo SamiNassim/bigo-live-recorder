@@ -330,8 +330,8 @@ func (e *Engine) SaveConfig(c state.Config) error {
 	e.mu.Unlock()
 	e.wakeUp()
 	e.log.WriteDetails("INFO", "settings", "Settings saved",
-		fmt.Sprintf("Native notifications: %t. Polling backup: %t. Request interval: %ds. Default quality: %s. Split interval: %d min (0 disables timed splitting). Processed copies: %t.",
-			c.NativeListening, c.PollingBackup, c.RequestDelaySeconds, c.StreamQuality, c.SplitMinutes, c.PostProcess), nil)
+		fmt.Sprintf("Native notifications: %t. Polling backup: %t. Request interval: %ds. Default quality: %s. Split interval: %d min. Split size: %d bytes (0 disables each limit). Processed copies: %t.",
+			c.NativeListening, c.PollingBackup, c.RequestDelaySeconds, c.StreamQuality, c.SplitMinutes, c.SplitBytes, c.PostProcess), nil)
 	return nil
 }
 

@@ -33,6 +33,8 @@ type Config struct {
 	FolderPerStreamer       bool           `json:"folder_per_streamer"`
 	FolderPerSplitRecording bool           `json:"folder_per_split_recording"`
 	SplitMinutes            int            `json:"split_minutes,omitempty"`
+	SplitBytes              int64          `json:"split_bytes,omitempty"`
+	SplitSizeUnit           string         `json:"split_size_unit,omitempty"`
 	PostProcess             bool           `json:"post_process"`
 	FFmpegArgs              string         `json:"ffmpeg_args"`
 	OutputExtension         string         `json:"output_extension"`
@@ -41,6 +43,16 @@ type Config struct {
 
 // Native timestamp differences use signed 32-bit milliseconds.
 const MaxSplitMinutes = (1<<31 - 1) / 60_000
+
+const (
+	BytesPerMB    int64 = 1_000_000
+	BytesPerGB    int64 = 1_000_000_000
+	MinSplitBytes       = BytesPerMB
+	MaxSplitBytes       = 1000 * BytesPerGB
+)
+
+// SplitEnabled reports whether recordings rotate by duration or file size.
+func (c Config) SplitEnabled() bool { return c.SplitMinutes > 0 || c.SplitBytes > 0 }
 
 // Origin uses native media; auto keeps the web player's automatic rendition.
 var StreamQualities = []string{"origin", "auto"}
@@ -132,7 +144,7 @@ func Defaults() Config {
 	return Config{Theme: "system", RecordingPath: filepath.Join(home, "Movies", "BIGO Live Recorder"), NativeListening: true,
 		NativeDeviceID: "web_" + rand.Text(),
 		PollSeconds:    75, ColdSeconds: 300, RequestDelaySeconds: 2, AutoPromote: true, Notifications: true, FolderPerStreamer: true, FolderPerSplitRecording: true,
-		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv", StreamQuality: "origin"}
+		FFmpegArgs: `-map 0:v? -map 0:a? -c copy`, OutputExtension: "mkv", StreamQuality: "origin", SplitSizeUnit: "GB"}
 }
 
 func (c Config) Validate() error {
@@ -159,6 +171,15 @@ func (c Config) Validate() error {
 	}
 	if c.SplitMinutes < 0 || c.SplitMinutes > MaxSplitMinutes {
 		return fmt.Errorf("recording split interval must be between 0 and %d minutes", MaxSplitMinutes)
+	}
+	if c.SplitBytes != 0 && (c.SplitBytes < MinSplitBytes || c.SplitBytes > MaxSplitBytes) {
+		return errors.New("recording split size must be between 1 MB and 1000 GB")
+	}
+	if c.SplitMinutes > 0 && c.SplitBytes > 0 {
+		return errors.New("choose either duration or file size for recording splitting")
+	}
+	if c.SplitSizeUnit != "" && c.SplitSizeUnit != "MB" && c.SplitSizeUnit != "GB" {
+		return errors.New("choose MB or GB for the recording split size")
 	}
 	if c.OutputExtension != "mkv" && c.OutputExtension != "mp4" && c.OutputExtension != "ts" {
 		return errors.New("choose MKV, MP4, or TS for the optional processed copy")

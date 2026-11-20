@@ -29,6 +29,9 @@ type CapturePart struct {
 	BroadcastID                string
 	Directory                  string
 	Timing                     *CaptureTiming
+	// RequestSplit finishes this part at a decodable boundary. It does not
+	// interrupt reception or affect any subsequent part.
+	RequestSplit func()
 }
 
 func (p *CapturePart) NativeTimestamps() bool { return p.Native }

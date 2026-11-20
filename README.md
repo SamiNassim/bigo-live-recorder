@@ -254,10 +254,21 @@ right-click menu to **Rebuild room replay** after its guest recordings finish.
 
 ### Split long recordings
 
-In **Settings → Recording → Split recordings every**, choose **30 minutes**,
-**1 hour**, or **Custom** and enter a duration in minutes. The default is **Off**.
+In **Settings → Recording → Split recordings**, choose **By duration** or
+**By file size**. The default is **Off**. Duration mode offers **30 minutes**,
+**1 hour**, or **Custom** with a duration in minutes. File-size mode lets you
+enter a value and choose **MB** or **GB**, for example **500 MB** or **2 GB**.
+Changing units preserves the size limit, and your preferred unit is remembered.
+MB and GB use decimal units. Size limits are checked against bytes written to
+disk; clips finish at a keyframe and can slightly exceed the selected size.
 Save the setting before starting a recording. The recorder saves each clip as it
-goes, in one folder per broadcast. Expand the broadcast in **Recordings** to open
+goes. With splitting enabled, **Group split clips in a separate folder** controls
+whether each broadcast gets its own folder; it is enabled by default. Turn it off
+to save clips directly in the recording folder, or in the streamer's folder when
+**Separate folder for each streamer** is enabled. Folder changes apply to new
+broadcasts; an existing broadcast keeps its saved location.
+
+Expand the broadcast in **Recordings** to open
 completed clips while the stream is still live. The group shows the full recording
 span, and each clip has its own duration. Video splits at a keyframe.
 If you enable optional FFmpeg processing, it runs for each completed clip.
